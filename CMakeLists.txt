@@ -150,6 +150,11 @@ else()
         "-s EXPORT_ES6=1"
         "-s EXCEPTION_CATCHING_ALLOWED=[..]"
         "-s SUPPORT_LONGJMP=wasm"
+        # ngspice's sharedspice references the dlopen family for optional XSPICE
+        # code models, which this build disables (--disable-xspice). The dlsym /
+        # dylib-runtime symbols cannot resolve in a fully static link, so allow
+        # them as aborting stubs — that code path is never exercised.
+        "-s ERROR_ON_UNDEFINED_SYMBOLS=0"
         "-fwasm-exceptions"
         "-l embind"
         "--bind"

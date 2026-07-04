@@ -2007,6 +2007,13 @@ void process_coil_configuration(OpenMagnetics::Coil& coil, json configuration, s
         coil.set_section_alignment(configuration["_sectionAlignment"]);
     }
 
+    // Shielding requirements must be set before any insulation configuration, so the
+    // insulation setters below can splice the shield layers into the interface stacks
+    if (configuration.contains("_shielding")) {
+        auto shieldingRequirements = std::vector<MAS::ShieldingRequirement>(configuration["_shielding"]);
+        coil.set_shielding_requirements(shieldingRequirements);
+    }
+
     // NOTE: zero thickness is intentionally allowed. A zero-thickness inter-layer
     // insulation layer acts as a geometric/thermal "marker" that lets adjacent
     // layer turns participate in the thermal graph (R_layer = 0, only wire enamel
