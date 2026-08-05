@@ -150,6 +150,9 @@ else()
         "-s EXPORT_ES6=1"
         "-s EXCEPTION_CATCHING_ALLOWED=[..]"
         "-s SUPPORT_LONGJMP=wasm"
+        # ngspice sharedspice references dlopen/dlsym/_emscripten_find_dylib for dynamic device
+        # loading, unused in the browser. Allow them undefined (aborting stubs); never called.
+        "-s ERROR_ON_UNDEFINED_SYMBOLS=0"
         "-fwasm-exceptions"
         "-l embind"
         "--bind"
