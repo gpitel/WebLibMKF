@@ -261,6 +261,29 @@ std::string calculate_processed(std::string harmonicsString, std::string wavefor
     }
 }
 
+// Derive how a core is assembled from its shape. The two call sites below hand-build a
+// CoreFunctionalDescription instead of going through the Core(shape, material) constructor,
+// so they do not inherit the type resolution done there and need it spelled out here.
+//
+// The shape FAMILY has to be consulted before the catalogue's magneticCircuit flag: MAS
+// marks every UI and PQI record `closed` (the set ships complete), so the flag alone sent a
+// UI shape down the else branch and stamped it CLOSED_SHAPE. process_data() then computed
+// the wrong geometry -- a UI winding window came out at twice its real height.
+static void set_type_from_shape(CoreFunctionalDescription& coreFunctionalDescription, const CoreShape& shape) {
+    if (OpenMagnetics::Core::is_piece_and_plate_family(shape.get_family())) {
+        coreFunctionalDescription.set_type(CoreType::PIECE_AND_PLATE);
+    }
+    else if (shape.get_magnetic_circuit() == MagneticCircuit::OPEN) {
+        coreFunctionalDescription.set_type(CoreType::TWO_PIECE_SET);
+    }
+    else if (shape.get_family() == CoreShapeFamily::T) {
+        coreFunctionalDescription.set_type(CoreType::TOROIDAL);
+    }
+    else {
+        coreFunctionalDescription.set_type(CoreType::CLOSED_SHAPE);
+    }
+}
+
 std::string calculate_core_data_from_shape(std::string shapeString){
     try {
         CoreShape shape(json::parse(shapeString));
@@ -269,17 +292,7 @@ std::string calculate_core_data_from_shape(std::string shapeString){
         coreFunctionalDescription.set_shape(shape);
         coreFunctionalDescription.set_material("Dummy");
         coreFunctionalDescription.set_number_stacks(1);
-        if (shape.get_magnetic_circuit() == MagneticCircuit::OPEN) {
-            coreFunctionalDescription.set_type(CoreType::TWO_PIECE_SET);
-        }
-        else {
-            if (shape.get_family() == CoreShapeFamily::T) {
-                coreFunctionalDescription.set_type(CoreType::TOROIDAL);
-            }
-            else {
-                coreFunctionalDescription.set_type(CoreType::CLOSED_SHAPE);
-            }
-        }
+        set_type_from_shape(coreFunctionalDescription, shape);
         core.set_functional_description(coreFunctionalDescription);
         core.process_data();
 
@@ -306,17 +319,7 @@ std::string calculate_all_core_data_from_shapes(){
                 coreFunctionalDescription.set_shape(shape);
                 coreFunctionalDescription.set_material("Dummy");
                 coreFunctionalDescription.set_number_stacks(1);
-                if (shape.get_magnetic_circuit() == MagneticCircuit::OPEN) {
-                    coreFunctionalDescription.set_type(CoreType::TWO_PIECE_SET);
-                }
-                else {
-                    if (shape.get_family() == CoreShapeFamily::T) {
-                        coreFunctionalDescription.set_type(CoreType::TOROIDAL);
-                    }
-                    else {
-                        coreFunctionalDescription.set_type(CoreType::CLOSED_SHAPE);
-                    }
-                }
+                set_type_from_shape(coreFunctionalDescription, shape);
                 core.set_functional_description(coreFunctionalDescription);
                 core.process_data();
                 
@@ -4323,12 +4326,19 @@ std::string set_intersection_insulation(std::string coilString, double layerThic
 std::string calculate_filling_factor(std::string coilString) {
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
-        auto [areaFillingFactor, aux] = coil.calculate_filling_factor();
-        auto [overlappingFillingFactor, contiguousFillingFactor] = aux;
+        // calculate_filling_factor now returns a named struct rather than a pair
+        // holding a nested pair, and carries two more quantities than before.
+        // maxLayerFillingFactor and windingFits are worth passing through: they are
+        // the per-layer overflow and the explicit "does the winding fit" verdict,
+        // which callers previously had to infer from an areal fraction that answers
+        // a different question.
+        auto fillingFactors = coil.calculate_filling_factor();
         json result;
-        result["areaFillingFactor"] = areaFillingFactor;
-        result["overlappingFillingFactor"] = overlappingFillingFactor;
-        result["contiguousFillingFactor"] = contiguousFillingFactor;
+        result["areaFillingFactor"] = fillingFactors.areaFillingFactor;
+        result["maxLayerFillingFactor"] = fillingFactors.maxLayerFillingFactor;
+        result["overlappingFillingFactor"] = fillingFactors.overlappingFillingFactor;
+        result["contiguousFillingFactor"] = fillingFactors.contiguousFillingFactor;
+        result["windingFits"] = fillingFactors.windingFits;
         return result.dump(4);
     }
     catch(const std::runtime_error& re)
