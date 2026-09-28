@@ -857,6 +857,8 @@ std::string get_core_temperature_dependant_parameters(std::string coreData, doub
         result["magneticFieldStrengthSaturation"] = core.get_magnetic_field_strength_saturation(temperature);
         result["initialPermeability"] = core.get_initial_permeability(temperature);
         result["effectivePermeability"] = core.get_effective_permeability(temperature);
+        // Core mass from the material density and the core volume (NaN when the record has no density).
+        result["mass"] = core.get_mass();
         result["reluctance"] = core.get_reluctance(temperature);
         auto reluctanceModel = OpenMagnetics::ReluctanceModel::factory();
         result["permeance"] = 1.0 / reluctanceModel->get_ungapped_core_reluctance(core);
@@ -892,6 +894,22 @@ std::vector<std::string> get_available_core_shape_families(){
     return families;
 }
 
+// The families the ENGINE can build, which is not the same question as
+// get_available_core_shape_families() above: that one reports the families present in the
+// loaded shape database, so a buildable family that ships no bare-core record (MOLDED,
+// DRUM_SEMISHIELDED — the construction is reconstructed per part, not sold as a core) never
+// appeared in the UI at all. A catalogue browser must offer these; a custom shape in such a
+// family is a perfectly ordinary part.
+std::vector<std::string> get_supported_core_shape_families(){
+    std::vector<std::string> families;
+    for (auto& family : OpenMagnetics::get_supported_core_shape_families()) {
+        json familyJson;
+        to_json(familyJson, family);
+        families.push_back(familyJson);
+    }
+    return families;
+}
+
 std::vector<std::string> get_available_core_manufacturers(){
     std::vector<std::string> manufacturers;
     auto materials = OpenMagnetics::get_materials("");
@@ -906,6 +924,195 @@ std::vector<std::string> get_available_core_manufacturers(){
 
 std::vector<std::string> get_available_core_materials(std::string manufacturer){
     return OpenMagnetics::get_core_material_names(manufacturer);
+}
+
+std::vector<std::string> get_available_core_materials_with_loss_model(std::string manufacturer){
+    // Materials characterised only for interference suppression (complex
+    // permeability, no volumetric/mass loss data) cannot feed any core-loss
+    // computation. Power/filter design flows list materials through this
+    // filtered variant so a selection can never end in MODEL_NOT_AVAILABLE;
+    // common-mode-choke flows keep the unfiltered list above (ABT #401).
+    std::vector<std::string> names;
+    for (auto& material : OpenMagnetics::get_materials(manufacturer)) {
+        if (!OpenMagnetics::CoreLossesModel::get_methods(material).empty()) {
+            names.push_back(material.get_name());
+        }
+    }
+    return names;
+}
+
+/**
+ * Catalogue summary of every core material, for the web material picker
+ * table (ABT #1072). One call instead of one get_material_data() per
+ * material, and only the properties a designer filters on, each resolved by
+ * MKF's own models (initial permeability, saturation, resistivity, losses)
+ * rather than re-read from the raw MAS record in JavaScript.
+ *
+ * Numbers are in SI. Properties a material's record does not carry come back
+ * as null, with the engine's reason in `missing` so the table can show it —
+ * a blank cell is an explicit "no data", never a substituted value. The loss
+ * reference point is the classic datasheet one: sinusoidal B̂ at the given
+ * frequency and temperature, W/m³, using the material's first loss method.
+ */
+// One row per catalogue wire for the web's wire table (ABT #1110): the identity and the
+// dimensions a designer filters on, every length in metres, absent data as null (never a
+// substitute). Litz rows carry their strand; coating is resolved through Wire::resolve_coating.
+std::string get_wires_summary() {
+    try {
+        auto dimensionOrNull = [](const std::optional<DimensionWithTolerance>& dimension) -> json {
+            if (!dimension) {
+                return nullptr;
+            }
+            return OpenMagnetics::resolve_dimensional_values(dimension.value());
+        };
+        json result = json::array();
+        for (auto& wire : OpenMagnetics::get_wires()) {
+            json row;
+            if (!wire.get_name()) {
+                throw std::runtime_error("A catalogue wire has no name");
+            }
+            row["name"] = wire.get_name().value();
+            json typeJson;
+            to_json(typeJson, wire.get_type());
+            row["type"] = typeJson;
+            if (wire.get_standard()) {
+                json standardJson;
+                to_json(standardJson, wire.get_standard().value());
+                row["standard"] = standardJson;
+            }
+            else {
+                row["standard"] = nullptr;
+            }
+            row["standardName"] = wire.get_standard_name() ? json(wire.get_standard_name().value()) : json(nullptr);
+            row["manufacturer"] = (wire.get_manufacturer_info() && wire.get_manufacturer_info()->get_name() != "") ? json(wire.get_manufacturer_info()->get_name()) : json(nullptr);
+            if (wire.get_material()) {
+                if (std::holds_alternative<std::string>(wire.get_material().value())) {
+                    row["material"] = std::get<std::string>(wire.get_material().value());
+                }
+                else {
+                    row["material"] = std::get<WireMaterial>(wire.get_material().value()).get_name();
+                }
+            }
+            else {
+                row["material"] = nullptr;
+            }
+            row["numberConductors"] = wire.get_number_conductors() ? json(wire.get_number_conductors().value()) : json(nullptr);
+            row["conductingDiameter"] = dimensionOrNull(wire.get_conducting_diameter());
+            row["outerDiameter"] = dimensionOrNull(wire.get_outer_diameter());
+            row["conductingWidth"] = dimensionOrNull(wire.get_conducting_width());
+            row["conductingHeight"] = dimensionOrNull(wire.get_conducting_height());
+            row["outerWidth"] = dimensionOrNull(wire.get_outer_width());
+            row["outerHeight"] = dimensionOrNull(wire.get_outer_height());
+            if (wire.get_type() == WireType::LITZ && wire.get_strand()) {
+                auto strand = wire.resolve_strand();
+                row["strandStandardName"] = strand.get_standard_name() ? json(strand.get_standard_name().value()) : json(nullptr);
+                row["strandConductingDiameter"] = dimensionOrNull(strand.get_conducting_diameter());
+            }
+            else {
+                row["strandStandardName"] = nullptr;
+                row["strandConductingDiameter"] = nullptr;
+            }
+            auto coating = wire.resolve_coating();
+            if (coating && coating->get_type()) {
+                json coatingTypeJson;
+                to_json(coatingTypeJson, coating->get_type().value());
+                row["coatingType"] = coatingTypeJson;
+                row["coatingGrade"] = coating->get_grade() ? json(coating->get_grade().value()) : json(nullptr);
+                row["coatingLayers"] = coating->get_number_layers() ? json(coating->get_number_layers().value()) : json(nullptr);
+            }
+            else {
+                row["coatingType"] = nullptr;
+                row["coatingGrade"] = nullptr;
+                row["coatingLayers"] = nullptr;
+            }
+            result.push_back(row);
+        }
+        return result.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+std::string get_core_materials_summary(double temperatureA, double temperatureB, double lossFrequency, double lossMagneticFluxDensityPeak, double lossTemperature){
+    try {
+        json result = json::array();
+        for (auto& material : OpenMagnetics::get_materials("")) {
+            json row;
+            json missing = json::object();
+            row["name"] = material.get_name();
+            row["manufacturer"] = material.get_manufacturer_info().get_name();
+            row["commercialName"] = material.get_commercial_name() ? json(material.get_commercial_name().value()) : json(nullptr);
+            row["family"] = material.get_family() ? json(material.get_family().value()) : json(nullptr);
+            {
+                json materialType;
+                to_json(materialType, material.get_material());
+                row["materialType"] = materialType;
+            }
+            if (material.get_material_composition()) {
+                json composition;
+                to_json(composition, material.get_material_composition().value());
+                row["composition"] = composition;
+            }
+            else {
+                row["composition"] = nullptr;
+            }
+            {
+                json applications = json::array();
+                if (material.get_application()) {
+                    for (auto& application : material.get_application().value()) {
+                        json applicationJson;
+                        to_json(applicationJson, application);
+                        applications.push_back(applicationJson);
+                    }
+                }
+                row["applications"] = applications;
+            }
+            row["curieTemperature"] = material.get_curie_temperature() ? json(material.get_curie_temperature().value()) : json(nullptr);
+            row["density"] = material.get_density() ? json(material.get_density().value()) : json(nullptr);
+
+            auto resolve = [&](const std::string& key, auto&& compute) {
+                try {
+                    row[key] = compute();
+                }
+                catch (const std::exception& exc) {
+                    row[key] = nullptr;
+                    missing[key] = std::string{exc.what()};
+                }
+            };
+            resolve("initialPermeabilityA", [&]() { return OpenMagnetics::Core::get_initial_permeability(material, temperatureA); });
+            resolve("initialPermeabilityB", [&]() { return OpenMagnetics::Core::get_initial_permeability(material, temperatureB); });
+            resolve("saturationA", [&]() { return OpenMagnetics::Core::get_magnetic_flux_density_saturation(material, temperatureA, false); });
+            resolve("saturationB", [&]() { return OpenMagnetics::Core::get_magnetic_flux_density_saturation(material, temperatureB, false); });
+            resolve("resistivityA", [&]() { return OpenMagnetics::Core::get_resistivity(material, temperatureA); });
+
+            auto methods = OpenMagnetics::CoreLossesModel::get_methods_string(material);
+            row["lossMethods"] = methods;
+            row["hasLossModel"] = !methods.empty();
+            resolve("volumetricLossesReference", [&]() {
+                auto lossMethods = OpenMagnetics::CoreLossesModel::get_methods(material);
+                if (lossMethods.empty()) {
+                    throw std::runtime_error("No core losses method available for material " + material.get_name());
+                }
+                auto model = OpenMagnetics::CoreLossesModel::factory(lossMethods[0]);
+                auto waveform = OpenMagnetics::Inputs::create_waveform(WaveformLabel::SINUSOIDAL, 2 * lossMagneticFluxDensityPeak, lossFrequency);
+                SignalDescriptor magneticFluxDensity;
+                magneticFluxDensity.set_waveform(waveform);
+                magneticFluxDensity.set_processed(OpenMagnetics::Inputs::calculate_processed_data(waveform, lossFrequency));
+                OperatingPointExcitation excitation;
+                excitation.set_frequency(lossFrequency);
+                excitation.set_magnetic_flux_density(magneticFluxDensity);
+                return model->get_core_volumetric_losses(material, excitation, lossTemperature);
+            });
+
+            row["missing"] = missing;
+            result.push_back(row);
+        }
+        return result.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
 }
 
 std::vector<std::string> get_available_core_shapes(){
@@ -1140,7 +1347,12 @@ double calculate_inductance_from_number_turns_and_gapping(std::string coreData,
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
 
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -1181,7 +1393,12 @@ double calculate_number_turns_from_gapping_and_inductance(std::string coreData,
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
 
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -1208,7 +1425,12 @@ double calculate_number_turns_from_gapping_and_inductance_legacy(std::string cor
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
 
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -1240,7 +1462,12 @@ std::string calculate_gapping_from_number_turns_and_inductance(std::string coreD
         OpenMagnetics::from_json(gappingTypeString, gappingType);
         
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -1306,7 +1533,12 @@ std::string calculate_core_losses(std::string coreData,
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
 
         auto reluctanceModelName = OpenMagnetics::defaults.reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
         auto coreLossesModelName = OpenMagnetics::defaults.coreLossesModelDefault;
@@ -1491,22 +1723,16 @@ std::string calculate_reflected_primary(std::string secondaryExcitationString, d
 double calculate_instantaneous_power(std::string excitationString){
     OperatingPointExcitation excitation(json::parse(excitationString));
 
-    if (!excitation.get_current().value().get_processed().value().get_rms().value()) {
-        auto current = excitation.get_current().value();
-        auto processed = OpenMagnetics::Inputs::calculate_processed_data(current.get_harmonics().value(), current.get_waveform().value(), true);
-        current.set_processed(processed);
-        excitation.set_current(current);
-    }
-    if (!excitation.get_voltage().value().get_processed().value().get_rms().value()) {
-        auto voltage = excitation.get_voltage().value();
-        auto processed = OpenMagnetics::Inputs::calculate_processed_data(voltage.get_harmonics().value(), voltage.get_waveform().value(), true);
-        voltage.set_processed(processed);
-        excitation.set_voltage(voltage);
-    }
-
-    auto instantaneousPower = OpenMagnetics::Inputs::calculate_instantaneous_power(excitation);
-
-    return instantaneousPower;
+    // ABT #223: this used to "guard" with
+    //     if (!excitation.get_current().value().get_processed().value().get_rms().value())
+    // which dereferences the very optionals it is meant to test — on the DEFAULT
+    // manual operating-point view the excitations carry a waveform but no
+    // `processed` block yet, so the guard itself threw bad_optional_access and the
+    // worker reported a generic "Error calling calculate_instantaneous_power".
+    // The processed data was never needed: Inputs::calculate_instantaneous_power
+    // works from the voltage/current WAVEFORMS and already throws specific
+    // MISSING_DATA messages when one is absent.
+    return OpenMagnetics::Inputs::calculate_instantaneous_power(excitation);
 }
 
 double calculate_rms_power(std::string excitationString){
@@ -1962,6 +2188,13 @@ void process_coil_configuration(OpenMagnetics::Coil& coil, json configuration, s
         }
     }
 
+    // Winding-style overrides (winding studio): winding name → forced
+    // consecutive-parallels (multifilar bundle) / consecutive-turns.
+    if (configuration.contains("_windingStyle") && configuration["_windingStyle"].is_object()) {
+        auto windingStyleOverrides = std::map<std::string, WindingStyle>(configuration["_windingStyle"]);
+        coil.preload_winding_style_overrides(windingStyleOverrides);
+    }
+
     if (configuration.contains("_interleavingLevel")) {
         coil.set_interleaving_level(configuration["_interleavingLevel"]);
     }
@@ -1997,22 +2230,41 @@ void process_coil_configuration(OpenMagnetics::Coil& coil, json configuration, s
 
 }
 
-std::string wind(std::string coilString, size_t repetitions, std::string proportionPerWindingString, std::string patternString, std::string marginPairsString) {
+static std::string wind_impl(const std::string& coilString, const std::string& coreColumnsString, size_t repetitions, const std::string& proportionPerWindingString, const std::string& patternString, const std::string& marginPairsString, const std::string& customSectionRectsString = "", bool delimitAndCompact = true) {
     try {
         auto coilJson = json::parse(coilString);
         auto marginPairs = std::vector<std::vector<double>>(json::parse(marginPairsString));
-        
+
         OpenMagnetics::Settings::GetInstance().set_coil_wind_even_if_not_fit(true);
-        OpenMagnetics::Settings::GetInstance().set_coil_delimit_and_compact(true);
+        OpenMagnetics::Settings::GetInstance().set_coil_delimit_and_compact(delimitAndCompact);
         OpenMagnetics::Settings::GetInstance().set_coil_include_additional_coordinates(true);
-        
+
         std::vector<double> proportionPerWinding = json::parse(proportionPerWindingString);
         std::vector<size_t> pattern = json::parse(patternString);
         auto winding = std::vector<OpenMagnetics::Winding>(coilJson["functionalDescription"]);
         OpenMagnetics::Coil coil;
-        coil.set_bobbin(coilJson["bobbin"]);
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
         coil.set_functional_description(winding);
         coil.preload_margins(marginPairs);
+        if (!coreColumnsString.empty()) {
+            // Multi-column placement: windings/sections placed in non-main winding
+            // windows need the core columns to build their lateral wound-column
+            // frames (Coil throws a specific error without them).
+            std::vector<ColumnElement> coreColumns = json::parse(coreColumnsString);
+            coil.set_core_columns(coreColumns);
+        }
+        if (!customSectionRectsString.empty()) {
+            // Hand-drawn section rectangles (winding studio): re-imposed at the
+            // end of the wind, after compaction — a drawn section never moves.
+            json rectsJson = json::parse(customSectionRectsString);
+            std::map<std::string, std::pair<std::vector<double>, std::vector<double>>> customSectionRects;
+            for (auto& [sectionName, rect] : rectsJson.items()) {
+                customSectionRects[sectionName] = {
+                    rect.at("coordinates").get<std::vector<double>>(),
+                    rect.at("dimensions").get<std::vector<double>>()};
+            }
+            coil.preload_custom_section_rects(customSectionRects);
+        }
 
         process_coil_configuration(coil, coilJson, repetitions, proportionPerWinding, pattern);
 
@@ -2040,15 +2292,28 @@ std::string wind(std::string coilString, size_t repetitions, std::string proport
         }
 
         if (!coil.get_turns_description()) {
-            throw std::runtime_error("Turns not created");
+            {
+                // ABT #930: name why the wind produced nothing — a bare "Turns not created"
+                // reads as a broken winder even when MKF is right to refuse the geometry.
+                const auto& fitReason = coil.get_last_fit_failure();
+                throw std::runtime_error(fitReason.empty()
+                    ? std::string("Turns not created: the winding does not fit its window, and the "
+                                  "reason could not be narrowed further.")
+                    : "Turns not created. " + fitReason);
+            }
         }
 
-        // Explicitly call delimit_and_compact to ensure toroidal additional turns are compacted
-        coil.delimit_and_compact();
+        if (delimitAndCompact) {
+            // Explicitly call delimit_and_compact to ensure toroidal additional turns are compacted
+            coil.delimit_and_compact();
+            // ...and re-impose the drawn rectangles it may have moved (no-op
+            // when none were preloaded).
+            coil.apply_custom_section_rects();
+        }
 
         json result;
         to_json(result, coil);
-        
+
         // Debug: Check if additional_coordinates are in the output
         size_t turnsWithAdditionalCoords = 0;
         if (result.contains("turnsDescription") && result["turnsDescription"].is_array()) {
@@ -2070,6 +2335,35 @@ std::string wind(std::string coilString, size_t repetitions, std::string proport
     }
 }
 
+std::string wind(std::string coilString, size_t repetitions, std::string proportionPerWindingString, std::string patternString, std::string marginPairsString) {
+    return wind_impl(coilString, "", repetitions, proportionPerWindingString, patternString, marginPairsString);
+}
+
+// The engine's automatic per-winding proportions (physical turn area per
+// winding from turns × parallels × wire area) — what wind() uses when no
+// proportions are given. Backs the studio's Auto-fit button.
+std::string calculate_proportion_per_winding_based_on_wires(std::string coilString) {
+    try {
+        auto coilJson = json::parse(coilString);
+        OpenMagnetics::Coil coil(coilJson, false);
+        json result = coil.get_proportion_per_winding_based_on_wires();
+        return result.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+// Multi-column variant of wind(): identical, plus the core columns JSON
+// (core.processedDescription.columns) so placements into non-main winding
+// windows (windingWindow on winding/group/section) can be wound, an optional
+// map of hand-drawn section rectangles ({name: {coordinates, dimensions}},
+// "" for none) re-imposed after compaction, and an explicit delimit/compact
+// switch.
+std::string wind_with_columns(std::string coilString, std::string coreColumnsString, size_t repetitions, std::string proportionPerWindingString, std::string patternString, std::string marginPairsString, std::string customSectionRectsString, bool delimitAndCompact) {
+    return wind_impl(coilString, coreColumnsString, repetitions, proportionPerWindingString, patternString, marginPairsString, customSectionRectsString, delimitAndCompact);
+}
+
 std::string wind_planar(std::string coilString, std::string stackUpString, double borderToWireDistance, std::string wireToWireDistanceString, std::string insulationThicknessString, double coreToLayerDistance) {
     try {
         OpenMagnetics::Settings::GetInstance().set_coil_wind_even_if_not_fit(true);
@@ -2085,7 +2379,15 @@ std::string wind_planar(std::string coilString, std::string stackUpString, doubl
         coil.wind_planar(stackUp, borderToWireDistance, wireToWireDistance, insulationThickness, coreToLayerDistance);
 
         if (!coil.get_turns_description()) {
-            throw std::runtime_error("Turns not created");
+            {
+                // ABT #930: name why the wind produced nothing — a bare "Turns not created"
+                // reads as a broken winder even when MKF is right to refuse the geometry.
+                const auto& fitReason = coil.get_last_fit_failure();
+                throw std::runtime_error(fitReason.empty()
+                    ? std::string("Turns not created: the winding does not fit its window, and the "
+                                  "reason could not be narrowed further.")
+                    : "Turns not created. " + fitReason);
+            }
         }
 
         // Explicitly call delimit_and_compact to ensure proper compacting
@@ -2113,7 +2415,7 @@ std::string wind_by_sections(std::string coilString, size_t repetitions, std::st
 
         process_coil_configuration(coil, coilString, repetitions, proportionPerWinding, pattern);
 
-        coil.set_bobbin(coilJson["bobbin"]);
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
         coil.set_functional_description(winding);
         if (proportionPerWinding.size() == winding.size()) {
             if (pattern.size() > 0 && repetitions > 0) {
@@ -2157,7 +2459,7 @@ std::string wind_by_layers(std::string coilString) {
 
         process_coil_configuration(coil, coilString);
 
-        coil.set_bobbin(coilJson["bobbin"]);
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
         coil.set_functional_description(winding);
         coil.set_sections_description(coilSectionsDescription);
         coil.wind_by_layers();
@@ -2182,7 +2484,7 @@ std::string wind_by_turns(std::string coilString) {
 
         process_coil_configuration(coil, coilString);
 
-        coil.set_bobbin(coilJson["bobbin"]);
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
         coil.set_functional_description(winding);
         coil.set_sections_description(coilSectionsDescription);
         coil.set_layers_description(coilLayersDescription);
@@ -2197,7 +2499,7 @@ std::string wind_by_turns(std::string coilString) {
     }
 }
 
-std::string delimit_and_compact(std::string coilString) {
+static std::string delimit_and_compact_impl(const std::string& coilString, const std::string& coreColumnsString) {
     try {
         auto coilJson = json::parse(coilString);
 
@@ -2209,21 +2511,31 @@ std::string delimit_and_compact(std::string coilString) {
 
         process_coil_configuration(coil, coilString);
 
-        coil.set_bobbin(coilJson["bobbin"]);
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
         coil.set_functional_description(winding);
         coil.set_sections_description(coilSectionsDescription);
         coil.set_layers_description(coilLayersDescription);
         coil.set_turns_description(coilTurnsDescription);
-        
+        // The serialized descriptions are at their FINAL multi-window positions;
+        // without this, delimit_and_compact re-compacts mirrored-window sections
+        // as if they were still in the +x winding frame.
+        coil.set_group_window_sides_applied(true);
+        if (!coreColumnsString.empty()) {
+            // Multi-column placement: sections in non-main winding windows need the
+            // core columns to rebuild their lateral wound-column frames.
+            std::vector<ColumnElement> coreColumns = json::parse(coreColumnsString);
+            coil.set_core_columns(coreColumns);
+        }
+
         // Preserve groupsDescription if it exists
         if (coilJson.contains("groupsDescription") && !coilJson["groupsDescription"].is_null()) {
             auto groupsDescription = std::vector<Group>(coilJson["groupsDescription"]);
             coil.set_groups_description(groupsDescription);
         }
-        
+
         OpenMagnetics::Settings::GetInstance().set_coil_delimit_and_compact(true);
         OpenMagnetics::Settings::GetInstance().set_coil_include_additional_coordinates(true);
-        
+
         coil.delimit_and_compact();
 
         json result;
@@ -2233,6 +2545,66 @@ std::string delimit_and_compact(std::string coilString) {
     catch (const std::exception &exc) {
         return "Exception: " + std::string{exc.what()};
     }
+}
+
+// Custom-rectangle re-flow (winding studio): re-run layers+turns INSIDE the
+// caller-provided section rectangles — sections are NOT recomputed and the
+// compaction pass that would undo the custom placement is NOT run.
+std::string wind_layers_and_turns_with_columns(std::string coilString, std::string coreColumnsString) {
+    try {
+        auto coilJson = json::parse(coilString);
+
+        OpenMagnetics::Settings::GetInstance().set_coil_wind_even_if_not_fit(true);
+        OpenMagnetics::Settings::GetInstance().set_coil_include_additional_coordinates(true);
+
+        auto winding = std::vector<OpenMagnetics::Winding>(coilJson["functionalDescription"]);
+        auto coilSectionsDescription = std::vector<Section>(coilJson["sectionsDescription"]);
+        OpenMagnetics::Coil coil;
+
+        process_coil_configuration(coil, coilString);
+
+        coil.set_bobbin_from_json(coilJson["bobbin"]);
+        coil.set_functional_description(winding);
+        coil.set_sections_description(coilSectionsDescription);
+        if (coilJson.contains("groupsDescription") && !coilJson["groupsDescription"].is_null()) {
+            coil.set_groups_description(std::vector<Group>(coilJson["groupsDescription"]));
+        }
+        // The provided rectangles are at their FINAL multi-window positions.
+        coil.set_group_window_sides_applied(true);
+        if (!coreColumnsString.empty()) {
+            std::vector<ColumnElement> coreColumns = json::parse(coreColumnsString);
+            coil.set_core_columns(coreColumns);
+        }
+
+        if (!coil.rewind_layers_and_turns()) {
+            {
+                // ABT #930: name why the wind produced nothing — a bare "Turns not created"
+                // reads as a broken winder even when MKF is right to refuse the geometry.
+                const auto& fitReason = coil.get_last_fit_failure();
+                throw std::runtime_error(fitReason.empty()
+                    ? std::string("Turns not created: the winding does not fit its window, and the "
+                                  "reason could not be narrowed further.")
+                    : "Turns not created. " + fitReason);
+            }
+        }
+
+        json result;
+        to_json(result, coil);
+        return result.dump(4);
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+std::string delimit_and_compact(std::string coilString) {
+    return delimit_and_compact_impl(coilString, "");
+}
+
+// Multi-column variant of delimit_and_compact(): identical, plus the core
+// columns JSON (core.processedDescription.columns).
+std::string delimit_and_compact_with_columns(std::string coilString, std::string coreColumnsString) {
+    return delimit_and_compact_impl(coilString, coreColumnsString);
 }
 
 std::string get_layers_by_winding_index(std::string coilString, int windingIndex){
@@ -2328,7 +2700,12 @@ std::string simulate(std::string inputsString,
         }
 
         auto reluctanceModelName = OpenMagnetics::defaults.reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
         auto coreLossesModelName = OpenMagnetics::defaults.coreLossesModelDefault;
@@ -3311,7 +3688,12 @@ std::string calculate_inductance_matrix(std::string magneticString, double frequ
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
         
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -3334,7 +3716,12 @@ std::string calculate_coupling_coefficient_matrix(std::string magneticString, do
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
         
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -3381,7 +3768,12 @@ std::string calculate_leakage_inductance_matrix(std::string magneticString, doub
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
         
         auto reluctanceModelName = OpenMagnetics::Defaults().reluctanceModelDefault;
-        if (models.find("reluctance") != models.end()) {
+        // ABT #1085: the web passes the reluctance model as "gapReluctance" (the key
+        // the model settings use); "reluctance" is kept for older callers.
+        if (models.find("gapReluctance") != models.end()) {
+            OpenMagnetics::from_json(models["gapReluctance"], reluctanceModelName);
+        }
+        else if (models.find("reluctance") != models.end()) {
             OpenMagnetics::from_json(models["reluctance"], reluctanceModelName);
         }
 
@@ -3397,9 +3789,40 @@ std::string calculate_leakage_inductance_matrix(std::string magneticString, doub
     }
 }
 
-std::string calculate_stray_capacitance(std::string coilString, std::string operatingPointString, std::string modelsData){
+// The capacitance entry points below used to take a bare COIL, so the turn-to-core
+// network (ABT #848: the exact cylinder-over-plane element, the core image factor from
+// the material's permittivity, and the real per-turn wire-to-core gap) could never act —
+// there was no core to act on. The panel was therefore structurally unable to agree with
+// the impedance sweep, which builds a full Magnetic. Measured on production before this:
+// designs whose resonance implied 43 nF and 220 nF of stray capacitance, where a wound
+// component is pF-class.
+//
+// Accepting a MAGNETIC costs nothing at the call site and keeps the arity identical, so
+// no caller can be handed the wrong number of arguments (the failure mode that took the
+// 3D view down twice this month). A bare coil is still accepted: if the JSON has a "coil"
+// key it is a Magnetic, otherwise it is the coil itself.
+//
+// frequency is deliberately NOT threaded here. It only sets the core image factor beta,
+// which is 1 for MnZn, nanocrystalline and any conductor — the impedance path passes its
+// own resonance because it has one to pass; a static panel does not, and inventing one
+// would be worse than the documented beta = 1 default.
+static std::pair<OpenMagnetics::Coil, std::optional<OpenMagnetics::Core>>
+coil_and_core_from(const std::string& magneticOrCoilString) {
+    json parsed = json::parse(magneticOrCoilString);
+    if (parsed.contains("coil")) {
+        // Go through Magnetic rather than constructing a Core by hand: that is the path
+        // every other binding uses, so the pre-1.0 migration and the core's own
+        // material/processed-description handling apply here identically instead of
+        // depending on which constructor flags I happened to pick.
+        OpenMagnetics::Magnetic magnetic(parsed);
+        return {magnetic.get_coil(), magnetic.get_core()};
+    }
+    return {OpenMagnetics::Coil(parsed, false), std::nullopt};
+}
+
+std::string calculate_stray_capacitance(std::string magneticString, std::string operatingPointString, std::string modelsData){
     try {
-        OpenMagnetics::Coil coil(json::parse(coilString), false);
+        auto [coil, core] = coil_and_core_from(magneticString);
         OperatingPoint operatingPoint(json::parse(operatingPointString));
         
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
@@ -3410,7 +3833,7 @@ std::string calculate_stray_capacitance(std::string coilString, std::string oper
         }
 
         OpenMagnetics::StrayCapacitance strayCapacitance(strayCapacitanceModelName);
-        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil, operatingPoint);
+        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil, operatingPoint, core);
 
         json result;
         to_json(result, strayCapacitanceOutput);
@@ -3421,9 +3844,9 @@ std::string calculate_stray_capacitance(std::string coilString, std::string oper
     }
 }
 
-std::string calculate_capacitance_matrix(std::string coilString, std::string modelsData){
+std::string calculate_capacitance_matrix(std::string magneticString, std::string modelsData){
     try {
-        OpenMagnetics::Coil coil(json::parse(coilString), false);
+        auto [coil, core] = coil_and_core_from(magneticString);
         
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
         
@@ -3433,7 +3856,7 @@ std::string calculate_capacitance_matrix(std::string coilString, std::string mod
         }
 
         OpenMagnetics::StrayCapacitance strayCapacitance(strayCapacitanceModelName);
-        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil);
+        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil, core);
 
         json result;
         if (strayCapacitanceOutput.get_capacitance_matrix()) {
@@ -3455,9 +3878,9 @@ std::string calculate_capacitance_matrix(std::string coilString, std::string mod
     }
 }
 
-std::string calculate_maxwell_capacitance_matrix(std::string coilString, std::string modelsData){
+std::string calculate_maxwell_capacitance_matrix(std::string magneticString, std::string modelsData){
     try {
-        OpenMagnetics::Coil coil(json::parse(coilString), false);
+        auto [coil, core] = coil_and_core_from(magneticString);
         
         std::map<std::string, std::string> models = json::parse(modelsData).get<std::map<std::string, std::string>>();
         
@@ -3467,7 +3890,7 @@ std::string calculate_maxwell_capacitance_matrix(std::string coilString, std::st
         }
 
         OpenMagnetics::StrayCapacitance strayCapacitance(strayCapacitanceModelName);
-        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil);
+        auto strayCapacitanceOutput = strayCapacitance.calculate_capacitance(coil, core);
 
         json result = json::array();
         if (strayCapacitanceOutput.get_maxwell_capacitance_matrix()) {
@@ -3867,6 +4290,24 @@ std::string mas_autocomplete(std::string masString, bool simulate, std::string c
     }
 }
 
+// Autocomplete a bare magnetic (no inputs): what the 3D visualizer needs to enrich a design
+// before MVB++ draws it (ABT #1100). The MAS variant above needs `inputs`, which a magnetic
+// on its own does not carry.
+std::string magnetic_autocomplete(std::string magneticString, std::string configurationString) {
+    try {
+        OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
+        json configuration(json::parse(configurationString));
+        auto autocompletedMagnetic = OpenMagnetics::magnetic_autocomplete(magnetic, configuration);
+
+        json result;
+        to_json(result, autocompletedMagnetic);
+        return result.dump(4);
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 std::string calculate_steinmetz_coefficients(std::string dataString, std::string rangesString) {
     try {
         json rangesJson = json::parse(rangesString);
@@ -4024,7 +4465,17 @@ std::string plot_turns(std::string magneticString) {
         // Catalog magnetics often arrive with only functionalDescription populated.
         {
             auto coil = magnetic.get_mutable_coil();
-            if (!coil.get_turns_description() || coil.get_turns_description()->empty()) {
+            // ABT #849 (Alf, 2026-08-22): with REAL WINDING on, wind IN-PROCESS even when the MAS
+            // already carries turns. `_realWindingBlockingApplied` is a runtime member of Coil,
+            // set inside wind() and never serialized into MAS, so a coil deserialized from JSON
+            // always reports "blocking not applied" -- and paint_coil_connections then paints
+            // every terminal and link as a RED DASHED "declined" marker, which is what made the
+            // web view disagree with the same design's locally painted SVG. Winding is
+            // deterministic, so the layout is the one the app already stored; the flag now states
+            // the truth, and a genuine ABT #650 decline still shows as declined.
+            const bool realWinding =
+                OpenMagnetics::Settings::GetInstance().get_coil_use_real_winding_geometry();
+            if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
                 coil.wind();
                 magnetic.set_coil(coil);
             }
@@ -4051,6 +4502,185 @@ std::string plot_turns(std::string magneticString) {
     }
 }
 
+
+// REAL WINDING (ABT #646 / #631 follow-up). plot_turns draws core + bobbin + turns and stops
+// there — it never draws how the turns are CONNECTED. paint_magnetic is the entry point that
+// does: XY adds the inter-layer links, dragbacks and terminal leads on top of the usual front
+// view; YZ is the connection-face projection where those leads are seen end-on.
+//
+// projection: "XY" (default) or "YZ", case-insensitive.
+//
+// The coil is (re-)wound when it has no turnsDescription, exactly like plot_turns. The caller
+// decides whether real-winding blocking applies by setting coilUseRealWindingGeometry through
+// set_settings first: that flag changes the LAYOUT (MKF reserves the lead and dragback
+// corridors), so painting with it off would draw a different coil from the one the 3D builder
+// routes. One flag, one coil, both views.
+// Drain MKF's capture log to JS. Registering the sink also raises the logger to WARNING, so
+// call it once BEFORE the operation you want to observe, then again to read what it emitted.
+std::string read_log() {
+    return OpenMagnetics::read_log();
+}
+
+std::string plot_magnetic(std::string magneticString, std::string projectionString) {
+    try {
+        std::filesystem::path emptyFilepath;
+
+        auto magneticJson = json::parse(magneticString);
+        OpenMagnetics::Magnetic magnetic(magneticJson);
+
+        {
+            auto coil = magnetic.get_mutable_coil();
+            // ABT #849 (Alf, 2026-08-22): with REAL WINDING on, wind IN-PROCESS even when the MAS
+            // already carries turns. `_realWindingBlockingApplied` is a runtime member of Coil,
+            // set inside wind() and never serialized into MAS, so a coil deserialized from JSON
+            // always reports "blocking not applied" -- and paint_coil_connections then paints
+            // every terminal and link as a RED DASHED "declined" marker, which is what made the
+            // web view disagree with the same design's locally painted SVG. Winding is
+            // deterministic, so the layout is the one the app already stored; the flag now states
+            // the truth, and a genuine ABT #650 decline still shows as declined.
+            const bool realWinding =
+                OpenMagnetics::Settings::GetInstance().get_coil_use_real_winding_geometry();
+            if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
+                coil.wind();
+                magnetic.set_coil(coil);
+            }
+        }
+
+        std::string projection = projectionString;
+        std::transform(projection.begin(), projection.end(), projection.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        OpenMagnetics::PainterProjection painterProjection;
+        if (projection == "YZ") {
+            painterProjection = OpenMagnetics::PainterProjection::YZ;
+        }
+        else if (projection.empty() || projection == "XY") {
+            painterProjection = OpenMagnetics::PainterProjection::XY;
+        }
+        else {
+            // Named explicitly rather than silently falling back to XY: a caller asking for a
+            // projection that does not exist is a bug in the caller, and a view that quietly
+            // is not the one requested is the worst way to find out.
+            throw std::runtime_error("plot_magnetic: unknown projection '" + projectionString +
+                                     "', expected 'XY' or 'YZ'");
+        }
+
+        OpenMagnetics::Painter painter(emptyFilepath);
+        painter.paint_magnetic(magnetic, painterProjection);
+        return painter.export_svg();
+    }
+    catch(const std::runtime_error& re)
+    {
+        return re.what();
+    }
+    catch(const std::exception& ex)
+    {
+        return ex.what();
+    }
+    catch(...)
+    {
+        return "Unknown failure occurred. Possible memory corruption";
+    }
+}
+
+
+// ABT #849 (Alf, 2026-08-22): THE CONNECTION LAYOUT AS DATA, for the Coil Studio.
+// The Studio is pure JS/SVG built from the MAS, while connections are DERIVED in C++
+// (Coil::get_connection_reserved_spaces / get_connection_layout) and are deliberately not part
+// of the MAS contract -- they would go stale the moment anything is re-wound. So expose them:
+// one call returns every drawn marker, the routes they group into, and the ride levels those
+// routes impose, in the same winding-window frame the turns already use. The Studio draws them;
+// MKF stays the single source of truth for where they go.
+std::string get_connection_layout(std::string magneticString) {
+    try {
+        auto magneticJson = json::parse(magneticString);
+        OpenMagnetics::Magnetic magnetic(magneticJson);
+        auto& settings = OpenMagnetics::Settings::GetInstance();
+        const bool realWinding = settings.get_coil_use_real_winding_geometry();
+
+        auto coil = magnetic.get_mutable_coil();
+        // WIND IN-PROCESS whenever real winding is on. `_realWindingBlockingApplied` is a RUNTIME
+        // member of Coil (set inside wind()), never serialized into MAS, so a coil deserialized
+        // from JSON always reports "blocking not applied" however it was really wound -- which is
+        // what painted every web connection as a red dashed "declined" marker while the local
+        // (same-process) SVGs drew them filled. Winding here is deterministic -- same sections and
+        // layers in, same layout out -- so the geometry is the one the app already stored, and the
+        // flag then states the truth: when the ABT #650 gate really declines, consumers must show
+        // it rather than present an unpaid-for layout as real.
+        if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
+            coil.wind();
+        }
+
+        auto enumName = [](auto value) { return std::string(magic_enum::enum_name(value)); };
+
+        json out;
+        out["realWinding"] = realWinding;
+        out["blockingApplied"] = coil.is_real_winding_blocking_applied();
+
+        json markers = json::array();
+        for (const auto& space : coil.get_connection_reserved_spaces()) {
+            json m;
+            m["winding"] = space.winding;
+            m["parallel"] = space.parallel;
+            m["section"] = space.section;
+            m["layer"] = space.layer;                  // non-empty = a squeeze on a CROSSED layer
+            m["coordinates"] = space.coordinates;      // centre, cartesian as turns are
+            m["dimensions"] = space.dimensions;
+            m["rotation"] = space.rotation;            // degrees; non-zero on diagonal links
+            m["coordinateSystem"] = enumName(space.coordinateSystem);
+            m["plane"] = enumName(space.plane);        // WINDOW_XY or FRONT_YZ (out of this view)
+            m["kind"] = enumName(space.kind);
+            m["isTerminal"] = space.isTerminal;
+            m["edgeDepth"] = space.edgeDepth;
+            m["fromTurn"] = space.fromTurn;
+            m["toTurn"] = space.toTurn;
+            if (space.routedLength) {
+                m["routedLength"] = space.routedLength.value();
+            }
+            markers.push_back(m);
+        }
+        out["markers"] = markers;
+
+        auto layout = coil.get_connection_layout();
+        json routes = json::array();
+        for (const auto& route : layout.routes) {
+            json r;
+            r["winding"] = route.winding;
+            r["parallel"] = route.parallel;
+            r["fromTurn"] = route.fromTurn;
+            r["toTurn"] = route.toTurn;
+            r["kind"] = enumName(route.kind);
+            r["side"] = route.side;
+            r["waypoints"] = route.waypoints;          // {layerAxis, turnAxis}, in path order
+            r["routedLength"] = route.routedLength;
+            routes.push_back(r);
+        }
+        out["routes"] = routes;
+
+        json rideLevels = json::array();
+        for (const auto& level : layout.rideLevels) {
+            json l;
+            l["side"] = level.side;
+            l["radius"] = level.radius;
+            l["height"] = level.height;
+            rideLevels.push_back(l);
+        }
+        out["rideLevels"] = rideLevels;
+
+        return out.dump();
+    }
+    catch(const std::runtime_error& re)
+    {
+        return json{{"error", re.what()}}.dump();
+    }
+    catch(const std::exception& ex)
+    {
+        return json{{"error", ex.what()}}.dump();
+    }
+    catch(...)
+    {
+        return json{{"error", "Unknown failure occurred. Possible memory corruption"}}.dump();
+    }
+}
 
 std::string plot_magnetic_field(std::string magneticString, std::string operatingPointString) {
     try {
@@ -4224,33 +4854,14 @@ std::string plot_temperature_field(std::string magneticString, std::string opera
         mas.set_magnetic(magnetic);
         mas.get_mutable_inputs().set_operating_points({operatingPoint});  // Set the operating point for simulation
         auto simulatedMas = magneticSimulator.simulate(mas);
-        
-        double coreLosses = 0.0;
-        double windingLosses = 0.0;
-        std::optional<WindingLossesOutput> windingLossesOutput;
-        
-        if (!simulatedMas.get_outputs().empty()) {
-            auto outputs = simulatedMas.get_outputs()[0];
-            if (outputs.get_core_losses().has_value()) {
-                coreLosses = outputs.get_core_losses().value().get_core_losses();
-            }
-            if (outputs.get_winding_losses().has_value()) {
-                windingLosses = outputs.get_winding_losses().value().get_winding_losses();
-                // Also get the detailed per-turn losses (required for toroidal cores)
-                windingLossesOutput = outputs.get_winding_losses().value();
-            }
+        if (simulatedMas.get_outputs().empty()) {
+            throw std::runtime_error("plot_temperature_field: simulation produced no outputs");
         }
-        
-        // Create temperature configuration
-        OpenMagnetics::TemperatureConfig config;
-        config.ambientTemperature = ambientTemperature;
-        config.coreLosses = coreLosses;
-        config.windingLosses = windingLosses;
-        // Set per-turn losses (required for toroidal core thermal analysis)
-        if (windingLossesOutput) {
-            config.windingLossesOutput = windingLossesOutput;
-        }
-        
+
+        // Shared config builder (ABT #906): the same configuration MagneticSimulator uses
+        // for outputs[].temperature, so this plot and the exported MAS can never disagree.
+        auto config = OpenMagnetics::TemperatureConfig::fromSimulatedOutput(operatingPoint, simulatedMas.get_outputs()[0]);
+
         // Create temperature model and calculate temperatures
         OpenMagnetics::Temperature temperature(magnetic, config);
         auto thermalResult = temperature.calculateTemperatures();
@@ -4330,21 +4941,31 @@ std::string set_intersection_insulation(std::string coilString, double layerThic
 std::string calculate_filling_factor(std::string coilString) {
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
-        auto [areaFillingFactor, aux] = coil.calculate_filling_factor();
-        auto [overlappingFillingFactor, contiguousFillingFactor] = aux;
+        auto fillingFactors = coil.calculate_filling_factor();
         json result;
-        result["areaFillingFactor"] = areaFillingFactor;
-        result["overlappingFillingFactor"] = overlappingFillingFactor;
-        result["contiguousFillingFactor"] = contiguousFillingFactor;
+        // ABT #245: areaFillingFactor is the TRUE area fraction. The overfill that used
+        // to be folded into it is reported separately as maxLayerFillingFactor, and
+        // windingFits carries the "does this wind at all" verdict the UI needs — a coil
+        // with a degenerate section used to report 6077% area fill for a 2.35% winding.
+        result["areaFillingFactor"] = fillingFactors.areaFillingFactor;
+        result["maxLayerFillingFactor"] = fillingFactors.maxLayerFillingFactor;
+        result["overlappingFillingFactor"] = fillingFactors.overlappingFillingFactor;
+        result["contiguousFillingFactor"] = fillingFactors.contiguousFillingFactor;
+        result["windingFits"] = fillingFactors.windingFits;
         return result.dump(4);
     }
+    // "Exception: " prefix, as 109 other bindings do. The JS side keys on that prefix to
+    // tell an error from a result; returning a bare what() made taskQueue.js JSON.parse
+    // the message, so a std::bad_optional_access surfaced as
+    //   SyntaxError: Unexpected token 'b', "bad_optional_access" is not valid JSON
+    // — the one string that says nothing about what failed or where.
     catch(const std::runtime_error& re)
     {
-        return re.what();
+        return "Exception: " + std::string(re.what());
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        return "Exception: " + std::string(ex.what());
     }
     catch(...)
     {
@@ -4366,7 +4987,28 @@ std::string get_settings() {
         settingsJson["coilOnlyOneTurnPerLayerInContiguousRectangular"] = OpenMagnetics::Settings::GetInstance().get_coil_only_one_turn_per_layer_in_contiguous_rectangular();
         settingsJson["coilTryRewind"] = OpenMagnetics::Settings::GetInstance().get_coil_try_rewind();
         settingsJson["coilMaximumLayersPlanar"] = OpenMagnetics::Settings::GetInstance().get_coil_maximum_layers_planar();
+        // ABT #1099: the manufacturer whose materials the core adviser searches first
+        // (standard-cores mode; a tiebreak, not a gate — see CoreAdviserMaterials).
+        settingsJson["preferredCoreMaterialFerriteManufacturer"] = OpenMagnetics::Settings::GetInstance().get_preferred_core_material_ferrite_manufacturer();
+        settingsJson["preferredCoreMaterialPowderManufacturer"] = OpenMagnetics::Settings::GetInstance().get_preferred_core_material_powder_manufacturer();
+        // ABT #1110: wire standard the wire/coil advisers restrict to (null = no preference).
+        {
+            auto preferredWireStandard = OpenMagnetics::Settings::GetInstance().get_preferred_wire_standard();
+            if (preferredWireStandard) {
+                json preferredWireStandardJson;
+                to_json(preferredWireStandardJson, preferredWireStandard.value());
+                settingsJson["preferredWireStandard"] = preferredWireStandardJson;
+            }
+            else {
+                settingsJson["preferredWireStandard"] = nullptr;
+            }
+        }
         settingsJson["coilIncludeAdditionalCoordinates"] = OpenMagnetics::Settings::GetInstance().get_coil_include_additional_coordinates();
+        // Real winding: MKF lays the turns out as they are actually wound (leads, pitch,
+        // dragbacks) instead of the idealised per-turn rings. The web 2D view paints
+        // through plot_turns, which reads this setting, so without it on the round trip
+        // the frontend has no way to ask for the real winding in 2D at all.
+        settingsJson["coilUseRealWindingGeometry"] = OpenMagnetics::Settings::GetInstance().get_coil_use_real_winding_geometry();
 
         settingsJson["useOnlyCoresInStock"] = OpenMagnetics::Settings::GetInstance().get_use_only_cores_in_stock();
         settingsJson["painterNumberPointsX"] = OpenMagnetics::Settings::GetInstance().get_painter_number_points_x();
@@ -4401,6 +5043,10 @@ std::string get_settings() {
         settingsJson["useToroidalCores"] = OpenMagnetics::Settings::GetInstance().get_use_toroidal_cores();
         settingsJson["useConcentricCores"] = OpenMagnetics::Settings::GetInstance().get_use_concentric_cores();
 
+        // Multi-column winding placement (winding studio)
+        settingsJson["corePerColumnWindingWindows"] = OpenMagnetics::Settings::GetInstance().get_core_per_column_winding_windows();
+        settingsJson["coilAdviserAllowLateralPlacement"] = OpenMagnetics::Settings::GetInstance().get_coil_adviser_allow_lateral_placement();
+
         // Temperature-filter settings were removed from Settings upstream;
         // emit defaults so the frontend schema isn't broken.
         settingsJson["coreAdviserEnableTemperatureFilter"] = false;
@@ -4416,6 +5062,10 @@ std::string get_settings() {
         settingsJson["windingProximityEffectLossesModel"] = static_cast<int>(OpenMagnetics::Settings::GetInstance().get_winding_proximity_effect_losses_model());
         settingsJson["strayCapacitanceModel"] = static_cast<int>(OpenMagnetics::Settings::GetInstance().get_stray_capacitance_model());
         settingsJson["coilEnableUserWindingLossesModels"] = OpenMagnetics::Settings::GetInstance().get_coil_enable_user_winding_losses_models();
+
+        // ABT #1454: a turn overlapping its enclosure makes the thermal network throw (true,
+        // the default) or lose that face's conduction path with an ERROR logged (false).
+        settingsJson["thermalNetworkStrictGeometry"] = OpenMagnetics::Settings::GetInstance().get_thermal_network_strict_geometry();
 
         return settingsJson.dump(4);
     }
@@ -4436,8 +5086,27 @@ void set_settings(std::string settingsString) {
     OpenMagnetics::Settings::GetInstance().set_coil_only_one_turn_per_layer_in_contiguous_rectangular(settingsJson["coilOnlyOneTurnPerLayerInContiguousRectangular"]);
     OpenMagnetics::Settings::GetInstance().set_coil_try_rewind(settingsJson["coilTryRewind"]);
     OpenMagnetics::Settings::GetInstance().set_coil_maximum_layers_planar(settingsJson["coilMaximumLayersPlanar"]);
+    if (settingsJson.contains("preferredCoreMaterialFerriteManufacturer")) {
+        OpenMagnetics::Settings::GetInstance().set_preferred_core_material_ferrite_manufacturer(settingsJson["preferredCoreMaterialFerriteManufacturer"]);
+    }
+    if (settingsJson.contains("preferredCoreMaterialPowderManufacturer")) {
+        OpenMagnetics::Settings::GetInstance().set_preferred_core_material_powder_manufacturer(settingsJson["preferredCoreMaterialPowderManufacturer"]);
+    }
+    if (settingsJson.contains("preferredWireStandard")) {
+        if (settingsJson["preferredWireStandard"].is_null()) {
+            OpenMagnetics::Settings::GetInstance().set_preferred_wire_standard(std::nullopt);
+        }
+        else {
+            OpenMagnetics::Settings::GetInstance().set_preferred_wire_standard(settingsJson["preferredWireStandard"].get<WireStandard>());
+        }
+    }
     if (settingsJson.contains("coilIncludeAdditionalCoordinates")) {
         OpenMagnetics::Settings::GetInstance().set_coil_include_additional_coordinates(settingsJson["coilIncludeAdditionalCoordinates"]);
+    }
+    // Guarded like the key above: older callers that hand back a settings object from
+    // before this key existed must keep working rather than throw on a missing field.
+    if (settingsJson.contains("coilUseRealWindingGeometry")) {
+        OpenMagnetics::Settings::GetInstance().set_coil_use_real_winding_geometry(settingsJson["coilUseRealWindingGeometry"]);
     }
 
     OpenMagnetics::Settings::GetInstance().set_use_only_cores_in_stock(settingsJson["useOnlyCoresInStock"]);
@@ -4511,6 +5180,18 @@ void set_settings(std::string settingsString) {
         OpenMagnetics::Settings::GetInstance().set_coil_enable_user_winding_losses_models(value);
     }
 
+    // Multi-column winding placement (winding studio). Guarded: older persisted
+    // settings objects predate these keys.
+    if (settingsJson.contains("corePerColumnWindingWindows")) {
+        OpenMagnetics::Settings::GetInstance().set_core_per_column_winding_windows(settingsJson["corePerColumnWindingWindows"].get<bool>());
+    }
+    if (settingsJson.contains("coilAdviserAllowLateralPlacement")) {
+        OpenMagnetics::Settings::GetInstance().set_coil_adviser_allow_lateral_placement(settingsJson["coilAdviserAllowLateralPlacement"].get<bool>());
+    }
+    // Guarded: settings objects persisted before this key existed must keep working.
+    if (settingsJson.contains("thermalNetworkStrictGeometry")) {
+        OpenMagnetics::Settings::GetInstance().set_thermal_network_strict_geometry(settingsJson["thermalNetworkStrictGeometry"].get<bool>());
+    }
 }
 void reset_settings(std::string settingsString) {
     OpenMagnetics::Settings::GetInstance().reset();
@@ -4851,8 +5532,12 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("calculate_all_core_data_from_shapes", &calculate_all_core_data_from_shapes);
     function("get_shape_data", &get_shape_data);
     function("get_available_core_materials", &get_available_core_materials);
+    function("get_available_core_materials_with_loss_model", &get_available_core_materials_with_loss_model);
+    function("get_core_materials_summary", &get_core_materials_summary);
+    function("get_wires_summary", &get_wires_summary);
     function("get_available_core_manufacturers", &get_available_core_manufacturers);
     function("get_available_core_shape_families", &get_available_core_shape_families);
+    function("get_supported_core_shape_families", &get_supported_core_shape_families);
     function("get_available_core_shapes", &get_available_core_shapes);
     function("get_available_core_shapes_by_manufacturer", &get_available_core_shapes_by_manufacturer);
     function("get_available_core_shapes_by_family", &get_available_core_shapes_by_family);
@@ -4901,11 +5586,15 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("get_available_coil_alignments", &get_available_coil_alignments);
     function("check_requirement", &check_requirement);
     function("wind", &wind);
+    function("wind_with_columns", &wind_with_columns);
+    function("calculate_proportion_per_winding_based_on_wires", &calculate_proportion_per_winding_based_on_wires);
     function("wind_planar", &wind_planar);
     function("wind_by_sections", &wind_by_sections);
     function("wind_by_layers", &wind_by_layers);
     function("wind_by_turns", &wind_by_turns);
     function("delimit_and_compact", &delimit_and_compact);
+    function("delimit_and_compact_with_columns", &delimit_and_compact_with_columns);
+    function("wind_layers_and_turns_with_columns", &wind_layers_and_turns_with_columns);
     function("get_layers_by_winding_index", &get_layers_by_winding_index);
     function("get_layers_by_section", &get_layers_by_section);
     function("get_sections_description_conduction", &get_sections_description_conduction);
@@ -4977,6 +5666,7 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("create_simple_bobbin_from_core_with_custom_thickness", &create_simple_bobbin_from_core_with_custom_thickness);
     function("create_simple_bobbin_from_core_with_custom_thicknesses", &create_simple_bobbin_from_core_with_custom_thicknesses);
     function("mas_autocomplete", &mas_autocomplete);
+    function("magnetic_autocomplete", &magnetic_autocomplete);
     function("calculate_steinmetz_coefficients", &calculate_steinmetz_coefficients);
     function("sweep_volumetric_losses_over_frequency", &sweep_volumetric_losses_over_frequency);
     function("get_initial_permeability_equations", &get_initial_permeability_equations);
@@ -4986,6 +5676,9 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("plot_sections", &plot_sections);
     function("plot_layers", &plot_layers);
     function("plot_turns", &plot_turns);
+    function("plot_magnetic", &plot_magnetic);
+    function("get_connection_layout", &get_connection_layout);   // ABT #849: connections as data
+    function("read_log", &read_log);
     function("plot_magnetic_field", &plot_magnetic_field);
     function("plot_electric_field", &plot_electric_field);
     function("plot_temperature_field", &plot_temperature_field);
