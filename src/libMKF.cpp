@@ -4451,6 +4451,62 @@ std::string plot_layers(std::string magneticString) {
     }
 }
 
+// Wind -- or, with REAL WINDING on, re-wind -- a magnetic's coil before it is painted or its
+// connection layout is exported.
+//
+// ABT #849 (Alf, 2026-08-22): with real winding on, wind IN-PROCESS even when the MAS already
+// carries turns. `_realWindingBlockingApplied` is a runtime member of Coil, set inside wind() and
+// never serialized into MAS, so a coil deserialized from JSON always reports "blocking not
+// applied" -- and paint_coil_connections then paints every terminal and link as a RED DASHED
+// "declined" marker, which is what made the web view disagree with the same design's locally
+// painted SVG. Re-winding makes the flag state the truth; a genuine ABT #650 decline still shows.
+//
+// The gate and the wind are MKF's own (magnetic_coil_needs_winding / wind_magnetic_coil_as_described,
+// the path magnetic_autocomplete takes), so the re-wind keeps what the design says about itself:
+// the interleaving its stored sections describe (ABT #610) and the turns alignment autocomplete
+// used. A bare coil.wind() here re-wound with the default [0,1] x interleavingLevel pattern, so a
+// S,P,S,P,S,P,S design was painted as two plain sections -- a coil that is not the design.
+//
+// A wind that does not fit is still DRAWN (Alf, 2026-09-29): "it does not fit" alone does not
+// tell the user why, the drawing does. The painters draw the coil as wound, add MKF's fit overlay
+// (window outlined, escaping turns ringed in red) and embed the reason in the SVG as
+// <desc id="om-winding-fit-failure">, which the web shows beside the drawing. The reason is
+// returned here; std::nullopt means the coil fits (or was not re-wound).
+static std::optional<std::string> wind_coil_for_display(OpenMagnetics::Magnetic& magnetic, const std::string& caller) {
+    if (!OpenMagnetics::magnetic_coil_needs_winding(magnetic)) {
+        return std::nullopt;
+    }
+    if (OpenMagnetics::wind_magnetic_coil_as_described(magnetic)) {
+        return std::nullopt;
+    }
+    const auto& reason = magnetic.get_mutable_coil().get_last_fit_failure();
+    return caller + ": the coil does not fit its winding window when wound as the design describes it. " +
+           (reason.empty() ? std::string("MKF could not narrow the reason further.") : reason);
+}
+
+// Carries a fit failure inside the drawing: an SVG <desc> right after the opening <svg ...> tag.
+static std::string embed_winding_fit_failure(const std::string& svg, const std::optional<std::string>& fitFailure) {
+    if (!fitFailure) {
+        return svg;
+    }
+    const auto openTagEnd = svg.find('>', svg.find("<svg"));
+    if (svg.rfind("<svg", 0) != 0 || openTagEnd == std::string::npos) {
+        throw std::runtime_error("embed_winding_fit_failure: the painter did not return an SVG to carry the fit failure in");
+    }
+    std::string escaped;
+    for (char c : fitFailure.value()) {
+        switch (c) {
+            case '&': escaped += "&amp;"; break;
+            case '<': escaped += "&lt;"; break;
+            case '>': escaped += "&gt;"; break;
+            case '"': escaped += "&quot;"; break;
+            default: escaped += c;
+        }
+    }
+    return svg.substr(0, openTagEnd + 1) + "<desc id=\"om-winding-fit-failure\">" + escaped + "</desc>" +
+           svg.substr(openTagEnd + 1);
+}
+
 std::string plot_turns(std::string magneticString) {
     try {
         OpenMagnetics::Settings::GetInstance().set_painter_simple_litz(true);
@@ -4462,43 +4518,28 @@ std::string plot_turns(std::string magneticString) {
         OpenMagnetics::Magnetic magnetic(magneticJson);
 
         // Ensure the coil is wound; otherwise paint_coil_turns throws COIL_NOT_PROCESSED.
-        // Catalog magnetics often arrive with only functionalDescription populated.
-        {
-            auto coil = magnetic.get_mutable_coil();
-            // ABT #849 (Alf, 2026-08-22): with REAL WINDING on, wind IN-PROCESS even when the MAS
-            // already carries turns. `_realWindingBlockingApplied` is a runtime member of Coil,
-            // set inside wind() and never serialized into MAS, so a coil deserialized from JSON
-            // always reports "blocking not applied" -- and paint_coil_connections then paints
-            // every terminal and link as a RED DASHED "declined" marker, which is what made the
-            // web view disagree with the same design's locally painted SVG. Winding is
-            // deterministic, so the layout is the one the app already stored; the flag now states
-            // the truth, and a genuine ABT #650 decline still shows as declined.
-            const bool realWinding =
-                OpenMagnetics::Settings::GetInstance().get_coil_use_real_winding_geometry();
-            if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
-                coil.wind();
-                magnetic.set_coil(coil);
-            }
-        }
+        // Catalog magnetics often arrive with only functionalDescription populated. With real
+        // winding on it is re-wound in-process (ABT #849), see wind_coil_for_display.
+        const auto fitFailure = wind_coil_for_display(magnetic, "plot_turns");
 
         OpenMagnetics::Painter painter(emptyFilepath);
         painter.paint_core(magnetic);
         painter.paint_bobbin(magnetic);
         painter.paint_coil_turns(magnetic);
-        auto result = painter.export_svg();
-        return result;
-    }
-    catch(const std::runtime_error& re)
-    {
-        return re.what();
+        if (fitFailure) {
+            painter.paint_winding_fit_problems(magnetic);
+        }
+        return embed_winding_fit_failure(painter.export_svg(), fitFailure);
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        // "Exception: " is what the web's export paths test for before saving the result as an
+        // .svg; a bare what() slipped past them and was downloaded as the drawing.
+        return "Exception: " + std::string{ex.what()};
     }
     catch(...)
     {
-        return "Unknown failure occurred. Possible memory corruption";
+        return "Exception: Unknown failure occurred. Possible memory corruption";
     }
 }
 
@@ -4528,23 +4569,9 @@ std::string plot_magnetic(std::string magneticString, std::string projectionStri
         auto magneticJson = json::parse(magneticString);
         OpenMagnetics::Magnetic magnetic(magneticJson);
 
-        {
-            auto coil = magnetic.get_mutable_coil();
-            // ABT #849 (Alf, 2026-08-22): with REAL WINDING on, wind IN-PROCESS even when the MAS
-            // already carries turns. `_realWindingBlockingApplied` is a runtime member of Coil,
-            // set inside wind() and never serialized into MAS, so a coil deserialized from JSON
-            // always reports "blocking not applied" -- and paint_coil_connections then paints
-            // every terminal and link as a RED DASHED "declined" marker, which is what made the
-            // web view disagree with the same design's locally painted SVG. Winding is
-            // deterministic, so the layout is the one the app already stored; the flag now states
-            // the truth, and a genuine ABT #650 decline still shows as declined.
-            const bool realWinding =
-                OpenMagnetics::Settings::GetInstance().get_coil_use_real_winding_geometry();
-            if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
-                coil.wind();
-                magnetic.set_coil(coil);
-            }
-        }
+        // Wound when it has no turns, and re-wound in-process with real winding on (ABT #849),
+        // see wind_coil_for_display.
+        const auto fitFailure = wind_coil_for_display(magnetic, "plot_magnetic");
 
         std::string projection = projectionString;
         std::transform(projection.begin(), projection.end(), projection.begin(),
@@ -4566,19 +4593,21 @@ std::string plot_magnetic(std::string magneticString, std::string projectionStri
 
         OpenMagnetics::Painter painter(emptyFilepath);
         painter.paint_magnetic(magnetic, painterProjection);
-        return painter.export_svg();
-    }
-    catch(const std::runtime_error& re)
-    {
-        return re.what();
+        if (fitFailure && painterProjection == OpenMagnetics::PainterProjection::XY) {
+            // The overlay is drawn in the XY frame; the YZ face carries the reason text only.
+            painter.paint_winding_fit_problems(magnetic);
+        }
+        return embed_winding_fit_failure(painter.export_svg(), fitFailure);
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        // "Exception: " is what the web's export paths test for before saving the result as an
+        // .svg; a bare what() slipped past them and was downloaded as the drawing.
+        return "Exception: " + std::string{ex.what()};
     }
     catch(...)
     {
-        return "Unknown failure occurred. Possible memory corruption";
+        return "Exception: Unknown failure occurred. Possible memory corruption";
     }
 }
 
@@ -4597,7 +4626,6 @@ std::string get_connection_layout(std::string magneticString) {
         auto& settings = OpenMagnetics::Settings::GetInstance();
         const bool realWinding = settings.get_coil_use_real_winding_geometry();
 
-        auto coil = magnetic.get_mutable_coil();
         // WIND IN-PROCESS whenever real winding is on. `_realWindingBlockingApplied` is a RUNTIME
         // member of Coil (set inside wind()), never serialized into MAS, so a coil deserialized
         // from JSON always reports "blocking not applied" however it was really wound -- which is
@@ -4606,9 +4634,14 @@ std::string get_connection_layout(std::string magneticString) {
         // layers in, same layout out -- so the geometry is the one the app already stored, and the
         // flag then states the truth: when the ABT #650 gate really declines, consumers must show
         // it rather than present an unpaid-for layout as real.
-        if (realWinding || !coil.get_turns_description() || coil.get_turns_description()->empty()) {
-            coil.wind();
+        // Same gate and same wind as the painters (wind_coil_for_display): the stored sections
+        // pattern is honoured, and a wind that does not fit throws instead of exporting a
+        // connection layout for a coil the design does not have.
+        if (auto fitFailure = wind_coil_for_display(magnetic, "get_connection_layout")) {
+            // Data, not a drawing: there is nothing to show the problem on, so it stays an error.
+            throw std::runtime_error(fitFailure.value());
         }
+        auto& coil = magnetic.get_mutable_coil();
 
         auto enumName = [](auto value) { return std::string(magic_enum::enum_name(value)); };
 
@@ -4690,14 +4723,14 @@ std::string plot_magnetic_field(std::string magneticString, std::string operatin
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
         
-        // For toroidal cores, ensure the coil is wound to generate additional_coordinates
-        auto coil = magnetic.get_mutable_coil();
-        auto core = magnetic.get_mutable_core();
-        if (core.get_shape_family() == CoreShapeFamily::T) {
-            if (!coil.get_turns_description() || coil.get_turns_description()->empty()) {
-                coil.wind();
-                magnetic.set_coil(coil);
-            }
+        // For toroidal cores, ensure the coil is wound to generate additional_coordinates.
+        // Wound as the design describes it (stored sections pattern kept); a wind that does not
+        // fit is still drawn, with the reason carried in the SVG -- see wind_coil_for_display.
+        std::optional<std::string> fitFailure;
+        if (magnetic.get_mutable_core().get_shape_family() == CoreShapeFamily::T &&
+            (!magnetic.get_mutable_coil().get_turns_description() ||
+             magnetic.get_mutable_coil().get_turns_description()->empty())) {
+            fitFailure = wind_coil_for_display(magnetic, "plot_magnetic_field");
         }
 
         OpenMagnetics::Painter painter(emptyFilepath);
@@ -4706,20 +4739,17 @@ std::string plot_magnetic_field(std::string magneticString, std::string operatin
         // painter.paint_bobbin(magnetic);
         // Paint turns for H field, skip insulation tape and margin for cleaner visualization
         painter.paint_coil_turns(magnetic, true);
-        auto result = painter.export_svg();
-        return result;
-    }
-    catch(const std::runtime_error& re)
-    {
-        return re.what();
+        return embed_winding_fit_failure(painter.export_svg(), fitFailure);
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        // "Exception: " is what the web's export paths test for before saving the result as an
+        // .svg; a bare what() slipped past them and was downloaded as the drawing.
+        return "Exception: " + std::string{ex.what()};
     }
     catch(...)
     {
-        return "Unknown failure occurred. Possible memory corruption";
+        return "Exception: Unknown failure occurred. Possible memory corruption";
     }
 }
 
@@ -4732,14 +4762,14 @@ std::string plot_electric_field(std::string magneticString, std::string operatin
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
         
-        // For toroidal cores, ensure the coil is wound to generate additional_coordinates
-        auto coil = magnetic.get_mutable_coil();
-        auto core = magnetic.get_mutable_core();
-        if (core.get_shape_family() == CoreShapeFamily::T) {
-            if (!coil.get_turns_description() || coil.get_turns_description()->empty()) {
-                coil.wind();
-                magnetic.set_coil(coil);
-            }
+        // For toroidal cores, ensure the coil is wound to generate additional_coordinates.
+        // Wound as the design describes it (stored sections pattern kept); a wind that does not
+        // fit is still drawn, with the reason carried in the SVG -- see wind_coil_for_display.
+        std::optional<std::string> fitFailure;
+        if (magnetic.get_mutable_core().get_shape_family() == CoreShapeFamily::T &&
+            (!magnetic.get_mutable_coil().get_turns_description() ||
+             magnetic.get_mutable_coil().get_turns_description()->empty())) {
+            fitFailure = wind_coil_for_display(magnetic, "plot_electric_field");
         }
 
         OpenMagnetics::Painter painter(emptyFilepath);
@@ -4748,20 +4778,17 @@ std::string plot_electric_field(std::string magneticString, std::string operatin
         // painter.paint_bobbin(magnetic);
         // Paint turns for E field, skip insulation tape and margin for cleaner visualization
         painter.paint_coil_turns(magnetic, true);
-        auto result = painter.export_svg();
-        return result;
-    }
-    catch(const std::runtime_error& re)
-    {
-        return re.what();
+        return embed_winding_fit_failure(painter.export_svg(), fitFailure);
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        // "Exception: " is what the web's export paths test for before saving the result as an
+        // .svg; a bare what() slipped past them and was downloaded as the drawing.
+        return "Exception: " + std::string{ex.what()};
     }
     catch(...)
     {
-        return "Unknown failure occurred. Possible memory corruption";
+        return "Exception: Unknown failure occurred. Possible memory corruption";
     }
 }
 
@@ -4835,14 +4862,13 @@ std::string plot_temperature_field(std::string magneticString, std::string opera
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
         
-        // For toroidal cores, ensure the coil is wound
-        auto coil = magnetic.get_mutable_coil();
-        auto core = magnetic.get_mutable_core();
-        if (core.get_shape_family() == CoreShapeFamily::T) {
-            if (!coil.get_turns_description() || coil.get_turns_description()->empty()) {
-                coil.wind();
-                magnetic.set_coil(coil);
-            }
+        // For toroidal cores, ensure the coil is wound -- as the design describes it; a wind that
+        // does not fit is still drawn, with the reason carried in the SVG (see wind_coil_for_display).
+        std::optional<std::string> fitFailure;
+        if (magnetic.get_mutable_core().get_shape_family() == CoreShapeFamily::T &&
+            (!magnetic.get_mutable_coil().get_turns_description() ||
+             magnetic.get_mutable_coil().get_turns_description()->empty())) {
+            fitFailure = wind_coil_for_display(magnetic, "plot_temperature_field");
         }
         
         // Get ambient temperature from operating point
@@ -4874,20 +4900,17 @@ std::string plot_temperature_field(std::string magneticString, std::string opera
         // hiding the temperature colors. The temperature field function already draws
         // the core and turns with their temperature colors.
         
-        auto result = painter.export_svg();
-        return result;
-    }
-    catch(const std::runtime_error& re)
-    {
-        return re.what();
+        return embed_winding_fit_failure(painter.export_svg(), fitFailure);
     }
     catch(const std::exception& ex)
     {
-        return ex.what();
+        // "Exception: " is what the web's export paths test for before saving the result as an
+        // .svg; a bare what() slipped past them and was downloaded as the drawing.
+        return "Exception: " + std::string{ex.what()};
     }
     catch(...)
     {
-        return "Unknown failure occurred. Possible memory corruption";
+        return "Exception: Unknown failure occurred. Possible memory corruption";
     }
 }
 
