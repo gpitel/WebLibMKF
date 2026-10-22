@@ -13,6 +13,7 @@
 #include "constructive_models/NumberTurns.h"
 #include "constructive_models/CorePiece.h"
 #include "processors/MagneticSimulator.h"
+#include "processors/ResultsAnalyzer.h"
 #include "physical_models/WindingOhmicLosses.h"
 #include "physical_models/WindingSkinEffectLosses.h"
 #include "physical_models/WindingLosses.h"
@@ -1561,7 +1562,11 @@ std::string calculate_core_losses(std::string coreData,
         // thermal-network model). Set it on Settings to honor the request payload.
         OpenMagnetics::Settings::GetInstance().set_core_temperature_model(coreTemperatureModelName);
         magneticSimulator.set_reluctance_model_name(reluctanceModelName);
-        auto coreLossesOutput = magneticSimulator.calculate_core_losses(operatingPoint, magnetic);
+        // ABT #1876 (Alf, 2026-10-14): a point with no thermal operating point gets its core losses at ambient and
+        // NO temperature (temperatureOutput stays empty); its coreLosses.temperature is the ambient they were
+        // evaluated at, not an operating temperature.
+        std::optional<TemperatureOutput> temperatureOutput;
+        auto coreLossesOutput = magneticSimulator.calculate_core_losses(operatingPoint, magnetic, nullptr, &temperatureOutput);
         json result;
         to_json(result, coreLossesOutput);
 
@@ -1577,17 +1582,19 @@ std::string calculate_core_losses(std::string coreData,
         result["voltageRms"] = operatingPoint.get_mutable_excitations_per_winding()[0].get_voltage().value().get_processed().value().get_rms().value();
         result["currentRms"] = operatingPoint.get_mutable_excitations_per_winding()[0].get_current().value().get_processed().value().get_rms().value();
         result["apparentPower"] = operatingPoint.get_mutable_excitations_per_winding()[0].get_voltage().value().get_processed().value().get_rms().value() * operatingPoint.get_mutable_excitations_per_winding()[0].get_current().value().get_processed().value().get_rms().value();
-        double coreTemperature = coreLossesOutput.get_temperature();
-        result["maximumCoreTemperature"] = coreTemperature;
-        result["maximumCoreTemperatureRise"] = coreTemperature - operatingPoint.get_conditions().get_ambient_temperature();
-        
+        // The core temperature the losses were solved at, only when the point has a thermal operating point:
+        // otherwise both keys are absent.
+        if (temperatureOutput) {
+            double coreTemperature = coreLossesOutput.get_temperature();
+            result["maximumCoreTemperature"] = coreTemperature;
+            result["maximumCoreTemperatureRise"] = coreTemperature - operatingPoint.get_conditions().get_ambient_temperature();
+        }
+
         return result.dump(4);
     }
     catch (const std::exception &exc) {
-        std::cerr << coreData << std::endl;
-        std::cerr << coilData << std::endl;
-        std::cerr << inputsData << std::endl;
-        std::cerr << modelsData << std::endl;
+        // The caller gets the error; the inputs are its own, so echoing them to
+        // stderr only flooded the browser console (ABT #1649).
         return "Exception: " + std::string{exc.what()};
     }
 }
@@ -1661,27 +1668,13 @@ std::string calculate_induced_current(std::string excitationString, double magne
     }
 }
 
+// ABT #1698: both reflections are MKF's (Inputs::calculate_reflected_secondary / _primary).
+// This file used to carry its own copies, which kept the label-dispatched voltage reflection
+// MKF had fixed (#1670) and so threw on the web's default rectangle.
 std::string calculate_reflected_secondary(std::string primaryExcitationString, double turnRatio){
     try {
         OperatingPointExcitation primaryExcitation(json::parse(primaryExcitationString));
-
-        OperatingPointExcitation excitationOfThisWinding(primaryExcitation);
-        auto currentSignalDescriptorProcessed = OpenMagnetics::Inputs::calculate_basic_processed_data(primaryExcitation.get_current().value().get_waveform().value());
-        auto voltageSignalDescriptorProcessed = OpenMagnetics::Inputs::calculate_basic_processed_data(primaryExcitation.get_voltage().value().get_waveform().value());
-
-        auto voltageSignalDescriptor = OpenMagnetics::Inputs::reflect_waveform(primaryExcitation.get_voltage().value(), 1.0 / turnRatio, voltageSignalDescriptorProcessed.get_label());
-        auto currentSignalDescriptor = OpenMagnetics::Inputs::reflect_waveform(primaryExcitation.get_current().value(), turnRatio, currentSignalDescriptorProcessed.get_label());
-
-        auto voltageSampledWaveform = OpenMagnetics::Inputs::calculate_sampled_waveform(voltageSignalDescriptor.get_waveform().value(), excitationOfThisWinding.get_frequency());
-        voltageSignalDescriptor.set_harmonics(OpenMagnetics::Inputs::calculate_harmonics_data(voltageSampledWaveform, excitationOfThisWinding.get_frequency()));
-        voltageSignalDescriptor.set_processed(OpenMagnetics::Inputs::calculate_processed_data(voltageSignalDescriptor, voltageSampledWaveform, true));
-
-        auto currentSampledWaveform = OpenMagnetics::Inputs::calculate_sampled_waveform(currentSignalDescriptor.get_waveform().value(), excitationOfThisWinding.get_frequency());
-        currentSignalDescriptor.set_harmonics(OpenMagnetics::Inputs::calculate_harmonics_data(currentSampledWaveform, excitationOfThisWinding.get_frequency()));
-        currentSignalDescriptor.set_processed(OpenMagnetics::Inputs::calculate_processed_data(currentSignalDescriptor, currentSampledWaveform, true));
-
-        excitationOfThisWinding.set_voltage(voltageSignalDescriptor);
-        excitationOfThisWinding.set_current(currentSignalDescriptor);
+        auto excitationOfThisWinding = OpenMagnetics::Inputs::calculate_reflected_secondary(primaryExcitation, turnRatio);
 
         json result;
         to_json(result, excitationOfThisWinding);
@@ -1695,21 +1688,7 @@ std::string calculate_reflected_secondary(std::string primaryExcitationString, d
 std::string calculate_reflected_primary(std::string secondaryExcitationString, double turnRatio){
     try {
         OperatingPointExcitation secondaryExcitation(json::parse(secondaryExcitationString));
-
-        OperatingPointExcitation excitationOfThisWinding(secondaryExcitation);
-        auto voltageSignalDescriptor = OpenMagnetics::Inputs::reflect_waveform(secondaryExcitation.get_voltage().value(), turnRatio);
-        auto currentSignalDescriptor = OpenMagnetics::Inputs::reflect_waveform(secondaryExcitation.get_current().value(), 1.0 / turnRatio);
-
-        auto voltageSampledWaveform = OpenMagnetics::Inputs::calculate_sampled_waveform(voltageSignalDescriptor.get_waveform().value(), excitationOfThisWinding.get_frequency());
-        voltageSignalDescriptor.set_harmonics(OpenMagnetics::Inputs::calculate_harmonics_data(voltageSampledWaveform, excitationOfThisWinding.get_frequency()));
-        voltageSignalDescriptor.set_processed(OpenMagnetics::Inputs::calculate_processed_data(voltageSignalDescriptor, voltageSampledWaveform, true));
-
-        auto currentSampledWaveform = OpenMagnetics::Inputs::calculate_sampled_waveform(currentSignalDescriptor.get_waveform().value(), excitationOfThisWinding.get_frequency());
-        currentSignalDescriptor.set_harmonics(OpenMagnetics::Inputs::calculate_harmonics_data(currentSampledWaveform, excitationOfThisWinding.get_frequency()));
-        currentSignalDescriptor.set_processed(OpenMagnetics::Inputs::calculate_processed_data(currentSignalDescriptor, currentSampledWaveform, true));
-
-        excitationOfThisWinding.set_voltage(voltageSignalDescriptor);
-        excitationOfThisWinding.set_current(currentSignalDescriptor);
+        auto excitationOfThisWinding = OpenMagnetics::Inputs::calculate_reflected_primary(secondaryExcitation, turnRatio);
 
         json result;
         to_json(result, excitationOfThisWinding);
@@ -2742,6 +2721,24 @@ std::string simulate(std::string inputsString,
 }
 
 
+// ABT #1855: the findings of a simulated MAS (as simulate / mas_autocomplete with simulate return it,
+// one output per operating point): MKF's verdict on its numbers -- a saturating core, a voltage that is
+// not volt-second balanced, a core or winding above a temperature limit its part states (or stating
+// none), a core driven past its material's data -- each naming its operating point. simulate itself
+// does not judge. Returns a JSON array of {operatingPointIndex, operatingPointName?, code, message}.
+std::string analyze_results(std::string masString) {
+    try {
+        OpenMagnetics::Mas mas(json::parse(masString));
+        auto findings = OpenMagnetics::ResultsAnalyzer::analyze_results(mas);
+        json result;
+        OpenMagnetics::to_json(result, findings);
+        return result.dump(4);
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 bool check_if_fits(std::string bobbinString, double dimension, bool isHorizontalOrRadial) {
     try {
         OpenMagnetics::Bobbin bobbin(json::parse(bobbinString));
@@ -2958,11 +2955,31 @@ std::string sweep_magnetizing_inductance_over_dc_bias(std::string magneticString
     }
 }
 
-std::string sweep_core_losses_over_frequency(std::string magneticString, std::string operatingPointString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+// The generated from_json leaves a Topology untouched for a name it does not know, so an unknown
+// name would reach the model as an uninitialised value: match it against each topology's own
+// spelling and throw when none matches.
+std::optional<MAS::Topology> parse_optional_topology(const json& topologyJson) {
+    if (topologyJson.is_null()) {
+        return std::nullopt;
+    }
+    for (auto candidate : magic_enum::enum_values<MAS::Topology>()) {
+        json spelling;
+        to_json(spelling, candidate);
+        if (spelling == topologyJson) {
+            return candidate;
+        }
+    }
+    throw std::invalid_argument("Unknown topology " + topologyJson.dump());
+}
+
+// topologyString: the design's designRequirements.topology as JSON, `null` when the design has
+// none. The magnetizing current that drives the core depends on it (ABT #1754).
+std::string sweep_core_losses_over_frequency(std::string magneticString, std::string operatingPointString, std::string topologyString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
-        auto resistanceOverFrequency = OpenMagnetics::Sweeper::sweep_core_losses_over_frequency(magnetic, operatingPoint, start, stop, numberElements, temperature, mode, title);
+        auto topology = parse_optional_topology(json::parse(topologyString));
+        auto resistanceOverFrequency = OpenMagnetics::Sweeper::sweep_core_losses_over_frequency(magnetic, operatingPoint, topology, start, stop, numberElements, temperature, mode, title);
 
         json result;
         to_json(result, resistanceOverFrequency);
@@ -4562,6 +4579,64 @@ std::string read_log() {
     return OpenMagnetics::read_log();
 }
 
+// MKF's log for advanced users. The console sink keeps its own level (ERROR by default); the
+// collector is separate, off until set_log_collection names a level, and keeps structured records
+// for drain_log_collection. Both return "" on success or "Exception: <reason>" (an unknown level).
+std::string set_log_level(std::string level) {
+    try {
+        OpenMagnetics::Logger::getInstance().setLevel(OpenMagnetics::log_level_from_string(level));
+        return "";
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+std::string get_log_level() {
+    return OpenMagnetics::to_string(OpenMagnetics::Logger::getInstance().getLevel());
+}
+
+// "OFF" stops collecting and discards what was not drained; any other level starts (or re-levels)
+// collection at that level.
+std::string set_log_collection(std::string level) {
+    try {
+        auto parsedLevel = OpenMagnetics::log_level_from_string(level);
+        if (parsedLevel == OpenMagnetics::LogLevel::OFF) {
+            OpenMagnetics::Logger::getInstance().disableCollector();
+        }
+        else {
+            OpenMagnetics::Logger::getInstance().enableCollector(parsedLevel);
+        }
+        return "";
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+std::string get_log_collection() {
+    auto& logger = OpenMagnetics::Logger::getInstance();
+    return logger.isCollectorEnabled() ? OpenMagnetics::to_string(logger.getCollectorLevel()) : std::string("OFF");
+}
+
+// Everything collected since the last drain, oldest first, as a JSON array of
+// {"level", "module", "message", "count"}; "[]" when nothing was collected or collection is off.
+std::string drain_log_collection() {
+    try {
+        json records = json::array();
+        for (const auto& record : OpenMagnetics::Logger::getInstance().drainCollected()) {
+            records.push_back({{"level", OpenMagnetics::to_string(record.level)},
+                               {"module", record.moduleOfOrigin},
+                               {"message", record.message},
+                               {"count", record.count}});
+        }
+        return records.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 std::string plot_magnetic(std::string magneticString, std::string projectionString) {
     try {
         std::filesystem::path emptyFilepath;
@@ -5070,10 +5145,14 @@ std::string get_settings() {
         settingsJson["corePerColumnWindingWindows"] = OpenMagnetics::Settings::GetInstance().get_core_per_column_winding_windows();
         settingsJson["coilAdviserAllowLateralPlacement"] = OpenMagnetics::Settings::GetInstance().get_coil_adviser_allow_lateral_placement();
 
-        // Temperature-filter settings were removed from Settings upstream;
-        // emit defaults so the frontend schema isn't broken.
-        settingsJson["coreAdviserEnableTemperatureFilter"] = false;
-        settingsJson["coreAdviserMaximumTemperature"] = 130.0;
+        // The adviser temperature gate, as the engine holds it (MKF's own default, unless set).
+        settingsJson["coreAdviserEnableTemperatureFilter"] = OpenMagnetics::Settings::GetInstance().get_core_adviser_enable_temperature_filter();
+        settingsJson["coreAdviserMaximumTemperature"] = OpenMagnetics::Settings::GetInstance().get_core_adviser_maximum_temperature();
+
+        // Explicit opt-in, off by default: use a core material outside its data (core-loss frequency
+        // outside the fitted Steinmetz span, temperature at or above Curie), extrapolating with a
+        // WARNING per use instead of throwing. Read the warnings with drain_log_collection().
+        settingsJson["allowMaterialDataExtrapolation"] = OpenMagnetics::Settings::GetInstance().get_allow_material_data_extrapolation();
 
         // Model selection settings
         settingsJson["magneticFieldStrengthModel"] = static_cast<int>(OpenMagnetics::Settings::GetInstance().get_magnetic_field_strength_model());
@@ -5169,9 +5248,16 @@ void set_settings(std::string settingsString) {
     OpenMagnetics::Settings::GetInstance().set_use_toroidal_cores(settingsJson["useToroidalCores"]);
     OpenMagnetics::Settings::GetInstance().set_use_concentric_cores(settingsJson["useConcentricCores"]);
 
-    // coreAdviserEnableTemperatureFilter / coreAdviserMaximumTemperature:
-    // setters were removed from Settings upstream; accept the keys for
-    // forward-compat but don't persist — no-op.
+    // Guarded: settings objects persisted before these keys were wired through must keep working.
+    if (settingsJson.contains("coreAdviserEnableTemperatureFilter")) {
+        OpenMagnetics::Settings::GetInstance().set_core_adviser_enable_temperature_filter(settingsJson["coreAdviserEnableTemperatureFilter"].get<bool>());
+    }
+    if (settingsJson.contains("coreAdviserMaximumTemperature")) {
+        OpenMagnetics::Settings::GetInstance().set_core_adviser_maximum_temperature(settingsJson["coreAdviserMaximumTemperature"].get<double>());
+    }
+    if (settingsJson.contains("allowMaterialDataExtrapolation")) {
+        OpenMagnetics::Settings::GetInstance().set_allow_material_data_extrapolation(settingsJson["allowMaterialDataExtrapolation"].get<bool>());
+    }
 
     // Model selection settings
     if (settingsJson.contains("magneticFieldStrengthModel")) {
@@ -5622,6 +5708,7 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("get_layers_by_section", &get_layers_by_section);
     function("get_sections_description_conduction", &get_sections_description_conduction);
     function("simulate", &simulate);
+    function("analyze_results", &analyze_results);
     function("are_sections_and_layers_fitting", &are_sections_and_layers_fitting);
     function("add_margin_to_section_by_index", &add_margin_to_section_by_index);
     function("check_if_fits", &check_if_fits);
@@ -5702,6 +5789,11 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("plot_magnetic", &plot_magnetic);
     function("get_connection_layout", &get_connection_layout);   // ABT #849: connections as data
     function("read_log", &read_log);
+    function("set_log_level", &set_log_level);
+    function("get_log_level", &get_log_level);
+    function("set_log_collection", &set_log_collection);
+    function("get_log_collection", &get_log_collection);
+    function("drain_log_collection", &drain_log_collection);
     function("plot_magnetic_field", &plot_magnetic_field);
     function("plot_electric_field", &plot_electric_field);
     function("plot_temperature_field", &plot_temperature_field);

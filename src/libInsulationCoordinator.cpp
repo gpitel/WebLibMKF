@@ -15,12 +15,10 @@ using namespace emscripten;
 using json = nlohmann::json;
 
 std::string calculate_insulation(std::string inputsString){
+    // On failure the result carries ONLY errorMessage: no distance field is
+    // present unless it was computed. A pre-filled 0.0 here reads as "no
+    // separation required" on a safety tool (ABT #1228).
     json result;
-    result["creepageDistance"] = 0.0;
-    result["clearance"] = 0.0;
-    result["withstandVoltage"] = 0.0;
-    result["distanceThroughInsulation"] = 0.0;
-    result["errorMessage"] = "";
     try
     {
         // Build Inputs via the default ctor + from_json so we bypass
@@ -34,22 +32,23 @@ std::string calculate_insulation(std::string inputsString){
         from_json(j, inputs);
 
         auto insulationCoordinator = OpenMagnetics::InsulationCoordinator();
-        result["creepageDistance"] = insulationCoordinator.calculate_creepage_distance(inputs, true);
-        result["clearance"] = insulationCoordinator.calculate_clearance(inputs);
-        result["withstandVoltage"] = insulationCoordinator.calculate_withstand_voltage(inputs);
-        result["distanceThroughInsulation"] = insulationCoordinator.calculate_distance_through_insulation(inputs);
-    }
-    catch(const std::runtime_error& re)
-    {
-        result["errorMessage"] = re.what();
+        // One call, one success-or-throw for all four distances.
+        json computed = insulationCoordinator.calculate_insulation_coordination(inputs);
+        // MAS takes an absent key, never null, for an unset optional.
+        for (auto it = computed.begin(); it != computed.end();) {
+            if (it->is_null()) {
+                it = computed.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+        result = computed;
     }
     catch(const std::exception& ex)
     {
+        result = json::object();
         result["errorMessage"] = ex.what();
-    }
-    catch(...)
-    {
-        result["errorMessage"] = "Unknown failure occurred. Possible memory corruption";
     }
     return result.dump(4);
 }
@@ -57,4 +56,4 @@ std::string calculate_insulation(std::string inputsString){
 
 EMSCRIPTEN_BINDINGS(my_bindings) {
     function("calculate_insulation", &calculate_insulation);
-}
+}
