@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include "support/LogOnceScope.h"
 #include "json.hpp"
 
 #include <emscripten/emscripten.h>
@@ -15,6 +16,7 @@ using namespace emscripten;
 using json = nlohmann::json;
 
 std::string calculate_insulation(std::string inputsString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     // On failure the result carries ONLY errorMessage: no distance field is
     // present unless it was computed. A pre-filled 0.0 here reads as "no
     // separation required" on a safety tool (ABT #1228).

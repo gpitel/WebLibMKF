@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include "support/LogOnceScope.h"
 #include "json.hpp"
 
 #include <emscripten/emscripten.h>
@@ -137,6 +138,7 @@ bool ensure_current_processed_for_effective_frequency(SignalDescriptor& current,
 }
 
 std::map<std::string, double> get_constants() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::map<std::string, double> constantsMap;
     constantsMap["residualGap"] = OpenMagnetics::constants.residualGap;
     constantsMap["minimumNonResidualGap"] = OpenMagnetics::constants.minimumNonResidualGap;
@@ -156,6 +158,7 @@ std::map<std::string, double> get_constants() {
 }
 
 std::map<std::string, double> get_defaults() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::map<std::string, double> defaultsMap;
     defaultsMap["maximumProportionMagneticFluxDensitySaturation"] = OpenMagnetics::defaults.maximumProportionMagneticFluxDensitySaturation;
     defaultsMap["coreAdviserFrequencyReference"] = OpenMagnetics::defaults.coreAdviserFrequencyReference;
@@ -181,6 +184,7 @@ std::map<std::string, double> get_defaults() {
 }
 
 std::string standardize_signal_descriptor(std::string signalDescriptorString, double frequency) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         SignalDescriptor signalDescriptor(json::parse(signalDescriptorString));
 
@@ -204,6 +208,7 @@ std::string standardize_signal_descriptor(std::string signalDescriptorString, do
 }
 
 std::vector<size_t> get_main_harmonic_indexes(std::string harmonicsString, double windingLossesHarmonicAmplitudeThreshold, int mainHarmonicIndex) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         Harmonics harmonics;
         from_json(json::parse(harmonicsString), harmonics);
@@ -225,6 +230,7 @@ std::vector<size_t> get_main_harmonic_indexes(std::string harmonicsString, doubl
 }
 
 std::vector<size_t> get_excitation_harmonic_indexes(std::string excitationString, double windingLossesHarmonicAmplitudeThreshold) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation excitation(json::parse(excitationString));
 
@@ -239,6 +245,7 @@ std::vector<size_t> get_excitation_harmonic_indexes(std::string excitationString
 }
 
 std::string calculate_harmonics(std::string waveformString, double frequency) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         Waveform waveform;
         from_json(json::parse(waveformString), waveform);
@@ -256,6 +263,7 @@ std::string calculate_harmonics(std::string waveformString, double frequency) {
 }
 
 std::string calculate_processed(std::string harmonicsString, std::string waveformString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         Waveform waveform;
         Harmonics harmonics;
@@ -276,6 +284,7 @@ std::string calculate_processed(std::string harmonicsString, std::string wavefor
 }
 
 std::string calculate_core_data_from_shape(std::string shapeString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreShape shape(json::parse(shapeString));
         OpenMagnetics::Core core;
@@ -307,13 +316,15 @@ std::string calculate_core_data_from_shape(std::string shapeString){
 }
 
 std::string calculate_all_core_data_from_shapes(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         // Get all shapes from the database
         auto allShapes = OpenMagnetics::get_shapes(true);
         
         json resultArray = json::array();
         
-        for (const auto& shape : allShapes) {
+        for (size_t shapeIndex = 0; shapeIndex < allShapes.size(); ++shapeIndex) {
+            const auto& shape = allShapes[shapeIndex];
             try {
                 OpenMagnetics::Core core;
                 CoreFunctionalDescription coreFunctionalDescription;
@@ -339,8 +350,11 @@ std::string calculate_all_core_data_from_shapes(){
                 resultArray.push_back(coreJson);
             }
             catch (const std::exception &exc) {
-                // Skip shapes that fail to process, log if needed
-                // std::cerr << "Failed to process shape: " << exc.what() << std::endl;
+                // A shape whose core data cannot be computed fails the whole call, named, instead of
+                // leaving the table one row short with nothing to say why.
+                std::string shapeName = shape.get_name() ? shape.get_name().value()
+                                                         : "shape " + std::to_string(shapeIndex) + " in the database, which has no name,";
+                throw std::runtime_error(shapeName + ": " + exc.what());
             }
         }
         
@@ -352,6 +366,7 @@ std::string calculate_all_core_data_from_shapes(){
 }
 
 std::string calculate_core_data(std::string coreDataString, bool includeMaterialData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreDataString), includeMaterialData, true);
 
@@ -365,6 +380,7 @@ std::string calculate_core_data(std::string coreDataString, bool includeMaterial
 }
 
 std::string calculate_bobbin_data(std::string magneticString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -395,6 +411,7 @@ std::string calculate_bobbin_data(std::string magneticString){
 }
 
 std::string create_simple_bobbin_from_core(std::string coresString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coresString), false, true);
         auto bobbin = OpenMagnetics::Bobbin::create_quick_bobbin(core);
@@ -409,6 +426,7 @@ std::string create_simple_bobbin_from_core(std::string coresString){
 }
 
 std::string create_simple_bobbin_from_core_with_custom_thickness(std::string coresString, double thickness){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coresString), false, true);
         auto bobbin = OpenMagnetics::Bobbin::create_quick_bobbin(core, thickness);
@@ -423,6 +441,7 @@ std::string create_simple_bobbin_from_core_with_custom_thickness(std::string cor
 }
 
 std::string create_simple_bobbin_from_core_with_custom_thicknesses(std::string coresString, double wallThickness, double columnThickness){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coresString), false, true);
         auto bobbin = OpenMagnetics::Bobbin::create_quick_bobbin(core, wallThickness, columnThickness);
@@ -438,6 +457,7 @@ std::string create_simple_bobbin_from_core_with_custom_thicknesses(std::string c
 
 
 std::string get_wire_data(std::string windingDataString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Winding winding(json::parse(windingDataString));
         auto wire = OpenMagnetics::Coil::resolve_wire(winding);
@@ -451,6 +471,7 @@ std::string get_wire_data(std::string windingDataString){
 }
 
 std::string get_wire_data_by_name(std::string name){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wireData = OpenMagnetics::find_wire_by_name(name);
         json result;
@@ -463,6 +484,7 @@ std::string get_wire_data_by_name(std::string name){
 }
 
 std::string get_wire_data_by_standard_name(std::string standardName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto wires = OpenMagnetics::get_wires();
     for (auto wire : wires) {
         if (!wire.get_standard_name()) {
@@ -488,6 +510,7 @@ std::string get_wire_data_by_standard_name(std::string standardName){
 }
 
 std::string get_planar_wire_by_standard_name(std::string standardName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         // Normalize input: add period if missing (e.g., "2 oz" -> "2 oz.")
         std::string normalizedName = standardName;
@@ -632,42 +655,49 @@ void repeat_converter_waveforms_periods(json& converterWaveforms, size_t numberO
 }
 
 double get_wire_outer_width_rectangular(double conductingWidth, int grade, std::string wireStandardString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_width_rectangular(conductingWidth, grade, wireStandard);
 }
 
 double get_wire_outer_height_rectangular(double conductingHeight, int grade, std::string wireStandardString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_height_rectangular(conductingHeight, grade, wireStandard);
 }
 
 double get_wire_outer_diameter_bare_litz(double conductingDiameter, int numberConductors, int grade, std::string wireStandardString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_diameter_bare_litz(conductingDiameter, numberConductors, grade, wireStandard);
 }
 
 double get_wire_outer_diameter_served_litz(double conductingDiameter, int numberConductors, int grade, int numberLayers, std::string wireStandardString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_diameter_served_litz(conductingDiameter, numberConductors, grade, numberLayers, wireStandard);
 }
 
 double get_wire_outer_diameter_insulated_litz(double conductingDiameter, int numberConductors, int numberLayers, double thicknessLayers, int grade, std::string wireStandardString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_diameter_insulated_litz(conductingDiameter, numberConductors, numberLayers, thicknessLayers, grade, wireStandard);
 }
 
 double get_wire_outer_diameter_enamelled_round(double conductingDiameter, int grade, std::string wireStandardString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_diameter_round(conductingDiameter, grade, wireStandard);
 }
 
 double get_wire_outer_diameter_insulated_round(double conductingDiameter, int numberLayers, double thicknessLayers, std::string wireStandardString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireStandard wireStandard;
     from_json(wireStandardString, wireStandard);
     return OpenMagnetics::Wire::get_outer_diameter_round(conductingDiameter, numberLayers, thicknessLayers, wireStandard);
@@ -688,12 +718,14 @@ OpenMagnetics::Wire resolve_wire_from_string(const std::string& wireString) {
 }
 
 std::vector<double> get_outer_dimensions(std::string wireString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto wire = resolve_wire_from_string(wireString);
     return {wire.get_maximum_outer_width(), wire.get_maximum_outer_height()};
 }
 
 
 std::string get_strand_by_standard_name(std::string standardName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto wires = OpenMagnetics::get_wires();
     for (auto wire : wires) {
         if (!wire.get_standard_name()) {
@@ -725,6 +757,7 @@ std::string get_strand_by_standard_name(std::string standardName){
 }
 
 double get_wire_conducting_diameter_by_standard_name(std::string standardName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto wires = OpenMagnetics::get_wires();
     for (auto wire : wires) {
         if (!wire.get_standard_name()) {
@@ -740,6 +773,7 @@ double get_wire_conducting_diameter_by_standard_name(std::string standardName){
 
 
 std::string get_equivalent_wire(std::string oldWireString, std::string newWireTypeString, double effectivefrequency){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Wire oldWire(json::parse(oldWireString));
         WireType newWireType;
@@ -759,6 +793,7 @@ std::string get_equivalent_wire(std::string oldWireString, std::string newWireTy
 }
 
 std::string get_coating_label(std::string wireString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Wire wire(json::parse(wireString));
         auto coatingLabel = wire.encode_coating_label();
@@ -779,6 +814,7 @@ std::string get_coating_label(std::string wireString){
 }
 
 std::string get_wire_coating_by_label(std::string label){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wires = OpenMagnetics::get_wires();
         InsulationWireCoating insulationWireCoating;
@@ -804,6 +840,7 @@ std::string get_wire_coating_by_label(std::string label){
 }
 
 std::vector<std::string> get_coating_labels_by_type(std::string wireTypeString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     WireType wireType(json::parse(wireTypeString));
 
     auto wires = OpenMagnetics::get_wires(wireType);
@@ -820,6 +857,7 @@ std::vector<std::string> get_coating_labels_by_type(std::string wireTypeString){
 }
 
 std::string load_core_data(std::string coresString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (auto& coreJson : json::parse(coresString)) {
@@ -837,6 +875,7 @@ std::string load_core_data(std::string coresString){
 }
 
 std::string get_material_data(std::string materialName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto materialData = OpenMagnetics::find_core_material_by_name(materialName);
         json result;
@@ -849,6 +888,7 @@ std::string get_material_data(std::string materialName){
 }
 
 std::string get_core_temperature_dependant_parameters(std::string coreData, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json coreJson = json::parse(coreData);
         MAS::CoreFunctionalDescription coreFunctionalDescription(coreJson["functionalDescription"]);
@@ -892,6 +932,7 @@ std::string get_core_temperature_dependant_parameters(std::string coreData, doub
 }
 
 std::string get_shape_data(std::string shapeName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto shapeData = OpenMagnetics::find_core_shape_by_name(shapeName);
 
@@ -905,6 +946,7 @@ std::string get_shape_data(std::string shapeName){
 }
 
 std::vector<std::string> get_available_core_shape_families(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> families;
     for (auto& family : OpenMagnetics::get_core_shape_families()) {
         json familyJson;
@@ -921,6 +963,7 @@ std::vector<std::string> get_available_core_shape_families(){
 // appeared in the UI at all. A catalogue browser must offer these; a custom shape in such a
 // family is a perfectly ordinary part.
 std::vector<std::string> get_supported_core_shape_families(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> families;
     for (auto& family : OpenMagnetics::get_supported_core_shape_families()) {
         json familyJson;
@@ -931,6 +974,7 @@ std::vector<std::string> get_supported_core_shape_families(){
 }
 
 std::vector<std::string> get_available_core_manufacturers(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> manufacturers;
     auto materials = OpenMagnetics::get_materials("");
     for (auto material : materials) {
@@ -943,10 +987,12 @@ std::vector<std::string> get_available_core_manufacturers(){
 }
 
 std::vector<std::string> get_available_core_materials(std::string manufacturer){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::get_core_material_names(manufacturer);
 }
 
 std::vector<std::string> get_available_core_materials_with_loss_model(std::string manufacturer){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     // Materials characterised only for interference suppression (complex
     // permeability, no volumetric/mass loss data) cannot feed any core-loss
     // computation. Power/filter design flows list materials through this
@@ -978,6 +1024,7 @@ std::vector<std::string> get_available_core_materials_with_loss_model(std::strin
 // dimensions a designer filters on, every length in metres, absent data as null (never a
 // substitute). Litz rows carry their strand; coating is resolved through Wire::resolve_coating.
 std::string get_wires_summary() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto dimensionOrNull = [](const std::optional<DimensionWithTolerance>& dimension) -> json {
             if (!dimension) {
@@ -1055,6 +1102,7 @@ std::string get_wires_summary() {
 }
 
 std::string get_core_materials_summary(double temperatureA, double temperatureB, double lossFrequency, double lossMagneticFluxDensityPeak, double lossTemperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (auto& material : OpenMagnetics::get_materials("")) {
@@ -1136,14 +1184,17 @@ std::string get_core_materials_summary(double temperatureA, double temperatureB,
 }
 
 std::vector<std::string> get_available_core_shapes(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::get_core_shape_names();
 }
 
 std::vector<std::string> get_available_core_shapes_by_manufacturer(std::string manufacturer){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::get_core_shape_names(manufacturer);
 }
 
 std::vector<std::string> get_available_core_shapes_by_family(std::string familyString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreShapeFamily family;
         from_json(familyString, family);
@@ -1156,6 +1207,7 @@ std::vector<std::string> get_available_core_shapes_by_family(std::string familyS
 }
 
 std::vector<std::string> get_shape_family_dimensions(std::string familyString, std::string familySubtype) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreShapeFamily family;
         from_json(familyString, family);
@@ -1176,6 +1228,7 @@ std::vector<std::string> get_shape_family_dimensions(std::string familyString, s
 }
 
 std::vector<std::string> get_shape_family_subtypes(std::string familyString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreShapeFamily family;
         from_json(familyString, family);
@@ -1191,10 +1244,12 @@ std::vector<std::string> get_shape_family_subtypes(std::string familyString) {
 }
 
 std::vector<std::string> get_available_wires(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::get_wire_names();
 }
 
 std::vector<std::string> get_unique_wire_diameters(std::string wireStandardString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WireStandard wireStandard(json::parse(wireStandardString));
         std::vector<std::string> uniqueStandardName;
@@ -1234,6 +1289,7 @@ std::vector<std::string> get_unique_wire_diameters(std::string wireStandardStrin
 
 
 std::vector<std::string> get_planar_thicknesses(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> uniqueStandardName;
         auto wires = OpenMagnetics::get_wires(WireType::PLANAR);
@@ -1253,6 +1309,7 @@ std::vector<std::string> get_planar_thicknesses(){
 }
 
 std::vector<std::string> get_available_wire_types(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     // std::vector<std::string> wireTypes;
 
     // for (auto [value, name] : magic_enum::enum_entries<WireType>()) {
@@ -1286,6 +1343,7 @@ std::vector<std::string> get_available_wire_types(){
 }
 
 std::vector<std::string> get_available_wire_standards(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     // std::vector<std::string> wireStandards;
 
     // for (auto [value, name] : magic_enum::enum_entries<WireStandard>()) {
@@ -1314,6 +1372,7 @@ std::vector<std::string> get_available_wire_standards(){
 }
 
 std::string calculate_gap_reluctance(std::string coreGapData, std::string modelNameString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::ReluctanceModels modelName;
         from_json(modelNameString, modelName);
@@ -1333,6 +1392,7 @@ std::string calculate_gap_reluctance(std::string coreGapData, std::string modelN
 }
 
 std::string get_gap_reluctance_model_information(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json info;
         info["information"] = OpenMagnetics::ReluctanceModel::get_models_information();
@@ -1352,6 +1412,7 @@ std::string calculate_inductance_from_number_turns_and_gapping(std::string coreD
                                                           std::string coilData,
                                                           std::string operatingPointData,
                                                           std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json coreJson = json::parse(coreData);
         MAS::CoreFunctionalDescription coreFunctionalDescription(coreJson["functionalDescription"]);
@@ -1403,6 +1464,7 @@ double calculate_number_turns_from_gapping_and_inductance(std::string coreData,
                                                           std::string coilData,
                                                           std::string inputsData,
                                                           std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreData));
         OpenMagnetics::Coil coil(json::parse(coilData), false);
@@ -1436,6 +1498,7 @@ double calculate_number_turns_from_gapping_and_inductance(std::string coreData,
 double calculate_number_turns_from_gapping_and_inductance_legacy(std::string coreData,
                                                                  std::string inputsData,
                                                                  std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreData));
         OpenMagnetics::Inputs inputs(json::parse(inputsData));
@@ -1470,6 +1533,7 @@ std::string calculate_gapping_from_number_turns_and_inductance(std::string coreD
                                                                std::string gappingTypeString,
                                                                int decimals,
                                                                std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreData));
         OpenMagnetics::Coil coil(json::parse(coilData), false);
@@ -1518,6 +1582,7 @@ std::string calculate_core_losses(std::string coreData,
                                   std::string inputsData,    
                                   std::string modelsData,    
                                   int operatingPointIndex){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json coreJson = json::parse(coreData);
         MAS::CoreFunctionalDescription coreFunctionalDescription(coreJson["functionalDescription"]);
@@ -1616,7 +1681,48 @@ std::string calculate_core_losses(std::string coreData,
     }
 }
 
+// ABT #2202: one period of the DYNAMIC Roshen B-H loop of the magnetic's core under the operating point's first
+// excitation, at `temperature` [C]. The flux density is the excitation's own, else MKF derives it from the voltage or
+// current on the magnetic. The field is the static Roshen loop widened by the fields of Roshen's eddy-current and excess
+// terms, so f * oint H dB over the samples is totalVolumetricLosses. `time` is non-decreasing over one period, closed
+// (last B = first B); where dB/dt jumps the instant is repeated with the field on either side. MKF throws (and this
+// returns "Exception: ...") for a DC-biased excitation, a flux density with minor loops, or a material without the
+// Roshen inputs.
+std::string calculate_dynamic_bh_loop(std::string magneticString, std::string operatingPointString, double temperature) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
+    try {
+        OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
+        OperatingPoint operatingPoint(json::parse(operatingPointString));
+        if (operatingPoint.get_excitations_per_winding().empty()) {
+            throw std::invalid_argument("The operating point has no excitations");
+        }
+        OperatingPointExcitation excitation = operatingPoint.get_excitations_per_winding()[0];
+        if (!excitation.get_magnetic_flux_density()) {
+            OpenMagnetics::MagnetizingInductance magnetizingInductance;
+            auto magneticFluxDensity = magnetizingInductance.calculate_inductance_and_magnetic_flux_density(magnetic, &operatingPoint).second;
+            excitation = operatingPoint.get_excitations_per_winding()[0];
+            excitation.set_magnetic_flux_density(magneticFluxDensity);
+        }
+        auto loop = OpenMagnetics::CoreLossesRoshenModel().get_dynamic_bh_loop(magnetic.get_core(), excitation, temperature);
+
+        json result;
+        result["frequency"] = loop.frequency;
+        result["time"] = loop.time;
+        result["magneticFluxDensity"] = loop.magneticFluxDensity;
+        result["magneticFieldStrength"] = loop.magneticFieldStrength;
+        result["hysteresisVolumetricLosses"] = loop.hysteresisVolumetricLosses;
+        result["eddyCurrentVolumetricLosses"] = loop.eddyCurrentVolumetricLosses;
+        result["excessVolumetricLosses"] = loop.excessVolumetricLosses;
+        result["totalVolumetricLosses"] = loop.totalVolumetricLosses;
+        return result.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 std::string get_core_losses_model_information(std::string material){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json info;
         info["information"] = OpenMagnetics::CoreLossesModel::get_models_information();
@@ -1632,6 +1738,7 @@ std::string get_core_losses_model_information(std::string material){
 }
 
 std::string get_core_temperature_model_information(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json info;
         info["information"] = OpenMagnetics::CoreTemperatureModel::get_models_information();
@@ -1646,6 +1753,7 @@ std::string get_core_temperature_model_information(){
 }
 
 std::string calculate_induced_voltage(std::string excitationString, double magnetizingInductance){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation excitation(json::parse(excitationString));
 
@@ -1661,6 +1769,7 @@ std::string calculate_induced_voltage(std::string excitationString, double magne
 }
 
 std::string calculate_induced_current(std::string excitationString, double magnetizingInductance){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation excitation(json::parse(excitationString));
 
@@ -1689,6 +1798,7 @@ std::string calculate_induced_current(std::string excitationString, double magne
 // This file used to carry its own copies, which kept the label-dispatched voltage reflection
 // MKF had fixed (#1670) and so threw on the web's default rectangle.
 std::string calculate_reflected_secondary(std::string primaryExcitationString, double turnRatio){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation primaryExcitation(json::parse(primaryExcitationString));
         auto excitationOfThisWinding = OpenMagnetics::Inputs::calculate_reflected_secondary(primaryExcitation, turnRatio);
@@ -1703,6 +1813,7 @@ std::string calculate_reflected_secondary(std::string primaryExcitationString, d
 }
 
 std::string calculate_reflected_primary(std::string secondaryExcitationString, double turnRatio){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation secondaryExcitation(json::parse(secondaryExcitationString));
         auto excitationOfThisWinding = OpenMagnetics::Inputs::calculate_reflected_primary(secondaryExcitation, turnRatio);
@@ -1717,6 +1828,7 @@ std::string calculate_reflected_primary(std::string secondaryExcitationString, d
 }
 
 double calculate_instantaneous_power(std::string excitationString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     OperatingPointExcitation excitation(json::parse(excitationString));
 
     // ABT #223: this used to "guard" with
@@ -1732,6 +1844,7 @@ double calculate_instantaneous_power(std::string excitationString){
 }
 
 double calculate_rms_power(std::string excitationString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation excitation(json::parse(excitationString));
 
@@ -1772,11 +1885,13 @@ double calculate_rms_power(std::string excitationString){
 }
 
 double resolve_dimension_with_tolerance(std::string dimensionWithToleranceString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     DimensionWithTolerance dimensionWithTolerance(json::parse(dimensionWithToleranceString));
     return OpenMagnetics::resolve_dimensional_values(dimensionWithTolerance);
 }
 
 std::string calculate_basic_processed_data(std::string waveformString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         Waveform waveform(json::parse(waveformString));
         auto processed = OpenMagnetics::Inputs::calculate_basic_processed_data(waveform);
@@ -1790,6 +1905,7 @@ std::string calculate_basic_processed_data(std::string waveformString) {
 }
 
 std::string create_waveform(std::string processedString, double frequency) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         ProcessedWaveform processed(json::parse(processedString));
         auto waveform = OpenMagnetics::Inputs::create_waveform(processed, frequency);
@@ -1803,6 +1919,7 @@ std::string create_waveform(std::string processedString, double frequency) {
 }
 
 std::string scale_waveform_time_to_frequency(std::string waveformString, double newFrequency) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         Waveform waveform(json::parse(waveformString));
         auto scaledWaveform = OpenMagnetics::Inputs::scale_time_to_frequency(waveform, newFrequency);
@@ -1816,6 +1933,7 @@ std::string scale_waveform_time_to_frequency(std::string waveformString, double 
 }
 
 std::string scale_excitation_time_to_frequency(std::string excitationString, double newFrequency) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OperatingPointExcitation excitation(json::parse(excitationString));
         OpenMagnetics::Inputs::scale_time_to_frequency(excitation, newFrequency, false, true);
@@ -1829,6 +1947,7 @@ std::string scale_excitation_time_to_frequency(std::string excitationString, dou
 }
 
 std::string calculate_insulation(std::string inputsString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     json result;
     result["creepageDistance"] = 0.0;
     result["clearance"] = 0.0;
@@ -1876,6 +1995,7 @@ std::string calculate_insulation(std::string inputsString){
 // (file:line:column, missing time column, etc.) to the user instead of
 // the previous catch-all "please check column names and frequency".
 std::string extract_operating_point(std::string fileString, size_t numberWindings, double frequency, double desiredMagnetizingInductance, std::string mapColumnNamesString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::map<std::string, std::string>> mapColumnNames =
             json::parse(mapColumnNamesString).get<std::vector<std::map<std::string, std::string>>>();
@@ -1895,6 +2015,7 @@ std::string extract_operating_point(std::string fileString, size_t numberWinding
 }
 
 std::string extract_map_column_names(std::string fileString, size_t numberWindings, double frequency){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto reader = OpenMagnetics::CircuitSimulationReader(fileString, true);
         auto columnNames = reader.extract_map_column_names(numberWindings, frequency);
@@ -1919,6 +2040,7 @@ std::string extract_map_column_names(std::string fileString, size_t numberWindin
 }
 
 std::string extract_column_names(std::string fileString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto reader = OpenMagnetics::CircuitSimulationReader(fileString, true);
         auto columnNames = reader.extract_column_names();
@@ -1939,6 +2061,7 @@ std::string extract_column_names(std::string fileString){
 }
 
 std::vector<int> calculate_number_turns(int numberTurnsPrimary, std::string designRequirementsString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     DesignRequirements designRequirements(json::parse(designRequirementsString));
 
     OpenMagnetics::NumberTurns numberTurns(numberTurnsPrimary, designRequirements);
@@ -1952,6 +2075,7 @@ std::vector<int> calculate_number_turns(int numberTurnsPrimary, std::string desi
 }
 
 double calculate_dc_resistance_per_meter(std::string wireString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         auto dcResistancePerMeter = OpenMagnetics::WindingOhmicLosses::calculate_dc_resistance_per_meter(wire, temperature);
@@ -1965,12 +2089,14 @@ double calculate_dc_resistance_per_meter(std::string wireString, double temperat
 }
 
 std::vector<double> calculate_dc_resistance_per_winding(std::string coilString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     OpenMagnetics::Coil coil(json::parse(coilString), false);
     auto dcResistancePerWinding = OpenMagnetics::WindingOhmicLosses::calculate_dc_resistance_per_winding(coil, temperature);
     return dcResistancePerWinding;
 }
 
 double calculate_dc_losses_per_meter(std::string wireString, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         SignalDescriptor current(json::parse(currentString));
@@ -1991,6 +2117,7 @@ double calculate_dc_losses_per_meter(std::string wireString, std::string current
 }
 
 double calculate_skin_ac_factor(std::string wireString, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         SignalDescriptor current(json::parse(currentString));
@@ -2013,6 +2140,7 @@ double calculate_skin_ac_factor(std::string wireString, std::string currentStrin
 }
 
 double calculate_skin_ac_losses_per_meter(std::string wireString, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         SignalDescriptor current(json::parse(currentString));
@@ -2033,6 +2161,7 @@ double calculate_skin_ac_losses_per_meter(std::string wireString, std::string cu
 }
 
 double calculate_skin_ac_resistance_per_meter(std::string wireString, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         SignalDescriptor current(json::parse(currentString));
@@ -2057,6 +2186,7 @@ double calculate_skin_ac_resistance_per_meter(std::string wireString, std::strin
 }
 
 double calculate_effective_current_density(std::string wireString, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto wire = resolve_wire_from_string(wireString);
         SignalDescriptor current(json::parse(currentString));
@@ -2077,6 +2207,7 @@ double calculate_effective_current_density(std::string wireString, std::string c
 }
 
 double calculate_effective_skin_depth(std::string material, std::string currentString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         SignalDescriptor current(json::parse(currentString));
 
@@ -2096,6 +2227,7 @@ double calculate_effective_skin_depth(std::string material, std::string currentS
 }
 
 std::vector<std::string> get_available_winding_orientations(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> orientations;
 
     for (size_t index = 0; index < magic_enum::enum_count<WindingOrientation>(); ++index) {
@@ -2106,6 +2238,7 @@ std::vector<std::string> get_available_winding_orientations(){
 }
 
 std::vector<std::string> get_available_coil_alignments(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> coilAlignments;
 
     for (size_t index = 0; index < magic_enum::enum_count<CoilAlignment>(); ++index) {
@@ -2116,6 +2249,7 @@ std::vector<std::string> get_available_coil_alignments(){
 }
 
 bool check_requirement(std::string requirementString, double value){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         DimensionWithTolerance requirement(json::parse(requirementString));
         bool result = OpenMagnetics::check_requirement(requirement, value);
@@ -2332,6 +2466,7 @@ static std::string wind_impl(const std::string& coilString, const std::string& c
 }
 
 std::string wind(std::string coilString, size_t repetitions, std::string proportionPerWindingString, std::string patternString, std::string marginPairsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return wind_impl(coilString, "", repetitions, proportionPerWindingString, patternString, marginPairsString);
 }
 
@@ -2339,6 +2474,7 @@ std::string wind(std::string coilString, size_t repetitions, std::string proport
 // winding from turns × parallels × wire area) — what wind() uses when no
 // proportions are given. Backs the studio's Auto-fit button.
 std::string calculate_proportion_per_winding_based_on_wires(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto coilJson = json::parse(coilString);
         OpenMagnetics::Coil coil(coilJson, false);
@@ -2357,10 +2493,12 @@ std::string calculate_proportion_per_winding_based_on_wires(std::string coilStri
 // "" for none) re-imposed after compaction, and an explicit delimit/compact
 // switch.
 std::string wind_with_columns(std::string coilString, std::string coreColumnsString, size_t repetitions, std::string proportionPerWindingString, std::string patternString, std::string marginPairsString, std::string customSectionRectsString, bool delimitAndCompact) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return wind_impl(coilString, coreColumnsString, repetitions, proportionPerWindingString, patternString, marginPairsString, customSectionRectsString, delimitAndCompact);
 }
 
 std::string wind_planar(std::string coilString, std::string stackUpString, double borderToWireDistance, std::string wireToWireDistanceString, std::string insulationThicknessString, double coreToLayerDistance) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(coil_wind_even_if_not_fit, true);
         WEB_SCOPED_SETTING(coil_delimit_and_compact, true);
@@ -2401,6 +2539,7 @@ std::string wind_planar(std::string coilString, std::string stackUpString, doubl
 }
 
 std::string wind_by_sections(std::string coilString, size_t repetitions, std::string proportionPerWindingString, std::string patternString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto coilJson = json::parse(coilString);
 
@@ -2446,6 +2585,7 @@ std::string wind_by_sections(std::string coilString, size_t repetitions, std::st
 }
 
 std::string wind_by_layers(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto coilJson = json::parse(coilString);
 
@@ -2470,6 +2610,7 @@ std::string wind_by_layers(std::string coilString) {
 }
 
 std::string wind_by_turns(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto coilJson = json::parse(coilString);
 
@@ -2547,6 +2688,7 @@ static std::string delimit_and_compact_impl(const std::string& coilString, const
 // caller-provided section rectangles — sections are NOT recomputed and the
 // compaction pass that would undo the custom placement is NOT run.
 std::string wind_layers_and_turns_with_columns(std::string coilString, std::string coreColumnsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto coilJson = json::parse(coilString);
 
@@ -2594,16 +2736,19 @@ std::string wind_layers_and_turns_with_columns(std::string coilString, std::stri
 }
 
 std::string delimit_and_compact(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return delimit_and_compact_impl(coilString, "");
 }
 
 // Multi-column variant of delimit_and_compact(): identical, plus the core
 // columns JSON (core.processedDescription.columns).
 std::string delimit_and_compact_with_columns(std::string coilString, std::string coreColumnsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return delimit_and_compact_impl(coilString, coreColumnsString);
 }
 
 std::string get_layers_by_winding_index(std::string coilString, int windingIndex){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
 
@@ -2622,6 +2767,7 @@ std::string get_layers_by_winding_index(std::string coilString, int windingIndex
 }
 
 std::string get_layers_by_section(std::string coilString, std::string sectionName){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         OpenMagnetics::Coil coil(json::parse(coilString), false);
@@ -2639,6 +2785,7 @@ std::string get_layers_by_section(std::string coilString, std::string sectionNam
 }
 
 std::string get_sections_description_conduction(std::string coilString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         OpenMagnetics::Coil coil(json::parse(coilString), false);
@@ -2655,7 +2802,34 @@ std::string get_sections_description_conduction(std::string coilString){
     }
 }
 
+// The thickness of an insulation section or layer of a stored coil, from MKF's own geometry: a
+// toroid's wall between contiguous sectors is stored as an angle, and MKF turns it back into the
+// tape thickness it was made from. The web must not convert the stored dimensions itself.
+// Returns the thickness in metres as a JSON number, or "Exception: ..." naming why it cannot.
+std::string get_insulation_section_thickness(std::string coilString, std::string sectionName) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
+    try {
+        OpenMagnetics::Coil coil(json::parse(coilString), false);
+        return json(coil.get_insulation_section_thickness(sectionName)).dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+std::string get_insulation_layer_thickness(std::string coilString, std::string layerName) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
+    try {
+        OpenMagnetics::Coil coil(json::parse(coilString), false);
+        return json(coil.get_insulation_layer_thickness(layerName)).dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 bool are_sections_and_layers_fitting(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         OpenMagnetics::Coil coil(json::parse(coilString), false);
@@ -2668,6 +2842,7 @@ bool are_sections_and_layers_fitting(std::string coilString) {
 }
 
 std::string add_margin_to_section_by_index(std::string coilString, int sectionIndex, double top_or_left_margin, double bottom_or_right_margin) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
         coil.add_margin_to_section_by_index(sectionIndex, {top_or_left_margin, bottom_or_right_margin});
@@ -2684,6 +2859,7 @@ std::string add_margin_to_section_by_index(std::string coilString, int sectionIn
 std::string simulate(std::string inputsString,
                      std::string magneticString,
                      std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
@@ -2744,6 +2920,7 @@ std::string simulate(std::string inputsString,
 // none), a core driven past its material's data -- each naming its operating point. simulate itself
 // does not judge. Returns a JSON array of {operatingPointIndex, operatingPointName?, code, message}.
 std::string analyze_results(std::string masString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Mas mas(json::parse(masString));
         auto findings = OpenMagnetics::ResultsAnalyzer::analyze_results(mas);
@@ -2757,6 +2934,7 @@ std::string analyze_results(std::string masString) {
 }
 
 bool check_if_fits(std::string bobbinString, double dimension, bool isHorizontalOrRadial) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Bobbin bobbin(json::parse(bobbinString));
         return bobbin.check_if_fits(dimension, isHorizontalOrRadial);
@@ -2768,6 +2946,7 @@ bool check_if_fits(std::string bobbinString, double dimension, bool isHorizontal
 }
 
 std::string export_magnetic_as_subcircuit(std::string magneticString, double temperature, std::string simulatorString, std::string jsimba) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -2808,6 +2987,7 @@ std::string export_magnetic_as_subcircuit(std::string magneticString, double tem
 
 
 std::string export_magnetic_as_symbol(std::string magneticString, std::string simulatorString, std::string jsimba) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -2839,6 +3019,7 @@ std::string export_magnetic_as_symbol(std::string magneticString, std::string si
 
 
 void calculate_ac_resistance_coefficients_per_winding(std::string magneticString, double temperature) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -2857,6 +3038,7 @@ void calculate_ac_resistance_coefficients_per_winding(std::string magneticString
 
 
 std::string sweep_impedance_over_frequency(std::string magneticString, double start, double stop, size_t numberElements, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -2875,6 +3057,7 @@ std::string sweep_impedance_over_frequency(std::string magneticString, double st
 
 
 std::string sweep_q_factor_over_frequency(std::string magneticString, double start, double stop, size_t numberElements, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -2893,6 +3076,7 @@ std::string sweep_q_factor_over_frequency(std::string magneticString, double sta
 
 
 std::string sweep_winding_resistance_over_frequency(std::string magneticString, double start, double stop, size_t numberElements, size_t windingIndex, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto resistanceOverFrequency = OpenMagnetics::Sweeper::sweep_winding_resistance_over_frequency(magnetic, start, stop, numberElements, windingIndex, temperature, mode, title);
@@ -2909,6 +3093,7 @@ std::string sweep_winding_resistance_over_frequency(std::string magneticString, 
 }
 
 std::string sweep_resistance_over_frequency(std::string magneticString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto resistanceOverFrequency = OpenMagnetics::Sweeper::sweep_resistance_over_frequency(magnetic, start, stop, numberElements, temperature, mode, title);
@@ -2925,6 +3110,7 @@ std::string sweep_resistance_over_frequency(std::string magneticString, double s
 }
 
 std::string sweep_magnetizing_inductance_over_frequency(std::string magneticString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto magnetizingInductanceOverFrequency = OpenMagnetics::Sweeper::sweep_magnetizing_inductance_over_frequency(magnetic, start, stop, numberElements, temperature, mode, title);
@@ -2941,6 +3127,7 @@ std::string sweep_magnetizing_inductance_over_frequency(std::string magneticStri
 }
 
 std::string sweep_magnetizing_inductance_over_temperature(std::string magneticString, double start, double stop, size_t numberElements, double frequency, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto magnetizingInductanceOverTemperature = OpenMagnetics::Sweeper::sweep_magnetizing_inductance_over_temperature(magnetic, start, stop, numberElements, frequency, mode, title);
@@ -2957,6 +3144,7 @@ std::string sweep_magnetizing_inductance_over_temperature(std::string magneticSt
 }
 
 std::string sweep_magnetizing_inductance_over_dc_bias(std::string magneticString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto magnetizingInductanceOverDcBias = OpenMagnetics::Sweeper::sweep_magnetizing_inductance_over_dc_bias(magnetic, start, stop, numberElements, temperature, mode, title);
@@ -2992,6 +3180,7 @@ std::optional<MAS::Topology> parse_optional_topology(const json& topologyJson) {
 // topologyString: the design's designRequirements.topology as JSON, `null` when the design has
 // none. The magnetizing current that drives the core depends on it (ABT #1754).
 std::string sweep_core_losses_over_frequency(std::string magneticString, std::string operatingPointString, std::string topologyString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
@@ -3010,6 +3199,7 @@ std::string sweep_core_losses_over_frequency(std::string magneticString, std::st
 }
 
 std::string sweep_winding_losses_over_frequency(std::string magneticString, std::string operatingPointString, double start, double stop, size_t numberElements, double temperature, std::string mode, std::string title) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OperatingPoint operatingPoint(json::parse(operatingPointString));
@@ -3033,6 +3223,7 @@ std::string sweep_winding_losses_over_frequency(std::string magneticString, std:
 // methodString: one of the CoreLossesModels json names ("Steinmetz", "IGSE",
 // "Roshen", "Proprietary", ...) or "" to use the material's best-ranked method.
 std::string sweep_volumetric_losses_over_frequency(std::string materialString, double temperature, double magneticFluxDensityPeak, double start, double stop, size_t numberElements, std::string methodString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreMaterial material = materialString.size() > 0 && materialString.front() == '{'
             ? CoreMaterial(json::parse(materialString))
@@ -3093,6 +3284,7 @@ std::string sweep_volumetric_losses_over_frequency(std::string materialString, d
 // (INVALID_LOSS_DATA, MATERIAL_INVALID_PROPERTY, ...). A material MKF cannot judge at all (no
 // temperature data) returns "Exception: [CODE] message", the convention of every call here.
 std::string check_core_material(std::string materialString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         CoreMaterial material = materialString.size() > 0 && materialString.front() == '{'
             ? CoreMaterial(json::parse(materialString))
@@ -3115,6 +3307,7 @@ std::string check_core_material(std::string materialString) {
 // A reference whose data states no point to compare at returns "Exception: [CODE] message". For a Steinmetz-only
 // reference the flux densities (1/2, 1/4, 1/8 of its saturation flux density) are a chosen spread; pointsSource says so.
 std::string compare_core_material_volumetric_losses(std::string referenceString, std::string otherString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto parseMaterial = [](const std::string& materialString) {
             return materialString.size() > 0 && materialString.front() == '{'
@@ -3133,6 +3326,7 @@ std::string compare_core_material_volumetric_losses(std::string referenceString,
 }
 
 size_t load_core_materials(std::string fileToLoad){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         if (fileToLoad != "") {
             OpenMagnetics::load_core_materials(fileToLoad);
@@ -3150,6 +3344,7 @@ size_t load_core_materials(std::string fileToLoad){
 }
 
 size_t load_core_shapes(std::string fileToLoad){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         if (fileToLoad != "") {
             OpenMagnetics::load_core_shapes(true, fileToLoad);
@@ -3166,6 +3361,7 @@ size_t load_core_shapes(std::string fileToLoad){
 }
 
 size_t load_wires(std::string fileToLoad){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         if (fileToLoad != "") {
             OpenMagnetics::load_wires(fileToLoad);
@@ -3182,6 +3378,7 @@ size_t load_wires(std::string fileToLoad){
 }
 
 size_t load_cores(std::string fileToLoad, bool includeToroids, bool useOnlyCoresInStock){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         if (fileToLoad != "") {
             OpenMagnetics::load_cores(fileToLoad);
@@ -3200,26 +3397,32 @@ size_t load_cores(std::string fileToLoad, bool includeToroids, bool useOnlyCores
 }
 
 void clear_loaded_cores(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     OpenMagnetics::clear_loaded_cores();
 }
 
 void clear_databases(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     OpenMagnetics::clear_databases();
 }
 
 bool is_core_material_database_empty(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::coreMaterialDatabase.size() == 0;
 }
 
 bool is_core_shape_database_empty(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::coreShapeDatabase.size() == 0;
 }
 
 bool is_wire_database_empty(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::wireDatabase.size() == 0;
 }
 
 std::vector<double> get_maximum_dimensions(std::string magneticString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         return magnetic.get_maximum_dimensions();
@@ -3311,7 +3514,6 @@ std::string calculate_advised_cores_impl(std::string inputsString, std::string w
             masMagnetics = coreAdviser.get_advised_core(inputs, weights, maximumNumberResults, ctx, adviserConstraints);
         }
         auto log = OpenMagnetics::read_log();
-        std::cout << "[DEBUG] MKF Log:\n" << log << std::endl;
         std::cout << "[DEBUG] Results count: " << masMagnetics.size() << std::endl;
         for (size_t i = 0; i < masMagnetics.size() && i < 10; ++i) {
             auto& magnetic = masMagnetics[i].first.get_magnetic();
@@ -3371,11 +3573,13 @@ std::string calculate_advised_cores_impl(std::string inputsString, std::string w
 }
 
 std::string calculate_advised_cores(std::string inputsString, std::string weightsString, int maximumNumberResults, std::string coreModeString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return calculate_advised_cores_impl(inputsString, weightsString, maximumNumberResults, coreModeString,
                                         nullptr, OpenMagnetics::AdviserConstraints{});
 }
 
 std::string calculate_advised_sections(std::string masString, std::string patternString, int repetitions){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Mas mas(json::parse(masString));
         json patternJson = json::parse(patternString);
@@ -3411,6 +3615,7 @@ std::string calculate_advised_sections(std::string masString, std::string patter
 }
 
 std::string calculate_advised_coil(std::string masString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         // Log the raw input string for debugging
         std::cout << "=== INPUT_JSON_START ===" << std::endl;
@@ -3457,6 +3662,7 @@ std::string calculate_advised_wires(std::string windingString,
                                     uint8_t numberSections,
                                     size_t maximumNumberResults,
                                     bool usePlanarWires){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(coil_delimit_and_compact, true);
         OpenMagnetics::Winding winding(json::parse(windingString));
@@ -3494,6 +3700,7 @@ std::string calculate_advised_wires(std::string windingString,
 }
 
 std::string get_solid_insulation_requirements_for_wires(std::string inputsString, std::string patternString, int repetitions) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
         json patternJson = json::parse(patternString);
@@ -3647,11 +3854,13 @@ std::string calculate_advised_magnetics_impl(std::string inputsString, std::stri
 }
 
 std::string calculate_advised_magnetics(std::string inputsString, std::string weightsString, int maximumNumberResults, std::string coreModeString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return calculate_advised_magnetics_impl(inputsString, weightsString, maximumNumberResults, coreModeString,
                                             nullptr, OpenMagnetics::AdviserConstraints{});
 }
 
 std::string calculate_advised_magnetics_from_catalog(std::string inputsString, std::string catalogString, int maximumNumberResults){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(coil_delimit_and_compact, true);
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
@@ -3696,6 +3905,7 @@ std::string calculate_advised_magnetics_from_catalog(std::string inputsString, s
 }
 
 std::string calculate_advised_magnetics_from_cache(std::string inputsString, std::string filterFlowString, int maximumNumberResults){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(coil_delimit_and_compact, true);
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
@@ -3743,6 +3953,7 @@ std::string calculate_advised_magnetics_from_cache(std::string inputsString, std
 }
 
 std::vector<std::string> get_available_core_filters(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     std::vector<std::string> filters;
     for (size_t index = 0; index < magic_enum::enum_count<OpenMagnetics::CoreAdviser::CoreAdviserFilters>(); ++index) {
         auto filter = static_cast<OpenMagnetics::CoreAdviser::CoreAdviserFilters>(index);
@@ -3753,6 +3964,7 @@ std::vector<std::string> get_available_core_filters(){
 }
 
 std::string calculate_leakage_inductance(std::string magneticString, double frequency, size_t sourceIndex){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
 
@@ -3768,6 +3980,7 @@ std::string calculate_leakage_inductance(std::string magneticString, double freq
 }
 
 std::string calculate_inductance_matrix(std::string magneticString, double frequency, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         
@@ -3796,6 +4009,7 @@ std::string calculate_inductance_matrix(std::string magneticString, double frequ
 }
 
 std::string calculate_coupling_coefficient_matrix(std::string magneticString, double frequency, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         
@@ -3848,6 +4062,7 @@ std::string calculate_coupling_coefficient_matrix(std::string magneticString, do
 }
 
 std::string calculate_leakage_inductance_matrix(std::string magneticString, double frequency, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         
@@ -3907,6 +4122,7 @@ coil_and_core_from(const std::string& magneticOrCoilString) {
 }
 
 std::string calculate_stray_capacitance(std::string magneticString, std::string operatingPointString, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto [coil, core] = coil_and_core_from(magneticString);
         OperatingPoint operatingPoint(json::parse(operatingPointString));
@@ -3931,6 +4147,7 @@ std::string calculate_stray_capacitance(std::string magneticString, std::string 
 }
 
 std::string calculate_capacitance_matrix(std::string magneticString, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto [coil, core] = coil_and_core_from(magneticString);
         
@@ -3965,6 +4182,7 @@ std::string calculate_capacitance_matrix(std::string magneticString, std::string
 }
 
 std::string calculate_maxwell_capacitance_matrix(std::string magneticString, std::string modelsData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto [coil, core] = coil_and_core_from(magneticString);
         
@@ -4002,6 +4220,7 @@ std::string calculate_maxwell_capacitance_matrix(std::string magneticString, std
 // calculate_stray_capacitance under tripoleCapacitancePerWinding / sixCapacitorNetworkPerWinding.
 
 std::string get_available_core_losses_methods(std::string magneticString){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         auto core = magnetic.get_core();
@@ -4105,6 +4324,7 @@ std::string toTitleCase(const std::string& str) {
 
 // Helper to get all enum values as display names
 std::string get_all_magnetic_field_strength_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::MagneticFieldStrengthModels>()) {
@@ -4119,6 +4339,7 @@ std::string get_all_magnetic_field_strength_models() {
 }
 
 std::string get_all_fringing_effect_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::MagneticFieldStrengthFringingEffectModels>()) {
@@ -4133,6 +4354,7 @@ std::string get_all_fringing_effect_models() {
 }
 
 std::string get_all_reluctance_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::ReluctanceModels>()) {
@@ -4147,6 +4369,7 @@ std::string get_all_reluctance_models() {
 }
 
 std::string get_all_winding_skin_effect_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::WindingSkinEffectLossesModels>()) {
@@ -4161,6 +4384,7 @@ std::string get_all_winding_skin_effect_models() {
 }
 
 std::string get_all_winding_proximity_effect_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::WindingProximityEffectLossesModels>()) {
@@ -4175,6 +4399,7 @@ std::string get_all_winding_proximity_effect_models() {
 }
 
 std::string get_all_stray_capacitance_models() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json result = json::array();
         for (const auto& enumValue : magic_enum::enum_values<OpenMagnetics::StrayCapacitanceModels>()) {
@@ -4189,6 +4414,7 @@ std::string get_all_stray_capacitance_models() {
 }
 
 std::string calculate_resistance_matrix(std::string magneticString, double temperature, double frequency){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         
@@ -4314,6 +4540,7 @@ std::string calculate_resistance_matrix(std::string magneticString, double tempe
 // DMC SPICE Circuit Generation
 
 std::vector<size_t> get_only_temperature_dependent_indexes(std::string permeabilityPointsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> permeabilityPointsStringVector = json::parse(permeabilityPointsString);
         std::vector<PermeabilityPoint> permeabilityPoints;
@@ -4330,6 +4557,7 @@ std::vector<size_t> get_only_temperature_dependent_indexes(std::string permeabil
 }
 
 std::vector<size_t> get_only_frequency_dependent_indexes(std::string permeabilityPointsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> permeabilityPointsStringVector = json::parse(permeabilityPointsString);
         std::vector<PermeabilityPoint> permeabilityPoints;
@@ -4346,6 +4574,7 @@ std::vector<size_t> get_only_frequency_dependent_indexes(std::string permeabilit
 }
 
 std::vector<size_t> get_only_magnetic_field_dc_bias_dependent_indexes(std::string permeabilityPointsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> permeabilityPointsStringVector = json::parse(permeabilityPointsString);
         std::vector<PermeabilityPoint> permeabilityPoints;
@@ -4362,6 +4591,7 @@ std::vector<size_t> get_only_magnetic_field_dc_bias_dependent_indexes(std::strin
 }
 
 std::string mas_autocomplete(std::string masString, bool simulate, std::string configurationString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Mas mas(json::parse(masString));
         json configuration(json::parse(configurationString));
@@ -4380,6 +4610,7 @@ std::string mas_autocomplete(std::string masString, bool simulate, std::string c
 // before MVB++ draws it (ABT #1100). The MAS variant above needs `inputs`, which a magnetic
 // on its own does not carry.
 std::string magnetic_autocomplete(std::string magneticString, std::string configurationString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         json configuration(json::parse(configurationString));
@@ -4395,6 +4626,7 @@ std::string magnetic_autocomplete(std::string magneticString, std::string config
 }
 
 std::string calculate_steinmetz_coefficients(std::string dataString, std::string rangesString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json rangesJson = json::parse(rangesString);
         std::vector<std::pair<double, double>> ranges;
@@ -4421,6 +4653,7 @@ std::string calculate_steinmetz_coefficients(std::string dataString, std::string
 }
 
 std::map<std::string, std::string> get_initial_permeability_equations(std::string permeabilityPointString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         MAS::PermeabilityPoint permeabilityPoint(json::parse(permeabilityPointString));
         return OpenMagnetics::InitialPermeability::get_initial_permeability_equations(permeabilityPoint);
@@ -4431,6 +4664,7 @@ std::map<std::string, std::string> get_initial_permeability_equations(std::strin
 }
 
 std::map<std::string, std::string> get_core_volumetric_losses_equations(std::string coreLossesMethodDataString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         MAS::CoreLossesMethodData coreLossesMethodData(json::parse(coreLossesMethodDataString));
         return OpenMagnetics::CoreLossesProprietaryModel::get_core_volumetric_losses_equations(coreLossesMethodData);
@@ -4442,6 +4676,7 @@ std::map<std::string, std::string> get_core_volumetric_losses_equations(std::str
 
 
 std::string calculate_complex_permeability(std::string coreMaterialString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         MAS::CoreMaterial coreMaterial(json::parse(coreMaterialString));
 
@@ -4464,6 +4699,7 @@ std::string calculate_complex_permeability(std::string coreMaterialString) {
 
 
 std::string plot_core(std::string magneticString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::filesystem::path emptyFilepath;
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
@@ -4488,6 +4724,7 @@ std::string plot_core(std::string magneticString) {
 }
 
 std::string plot_sections(std::string magneticString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::filesystem::path emptyFilepath;
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
@@ -4513,6 +4750,7 @@ std::string plot_sections(std::string magneticString) {
 }
 
 std::string plot_layers(std::string magneticString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::filesystem::path emptyFilepath;
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
@@ -4594,6 +4832,7 @@ static std::string embed_winding_fit_failure(const std::string& svg, const std::
 }
 
 std::string plot_turns(std::string magneticString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, true);
         WEB_SCOPED_SETTING(painter_advanced_litz, false);
@@ -4645,6 +4884,7 @@ std::string plot_turns(std::string magneticString) {
 // Drain MKF's capture log to JS. Registering the sink also raises the logger to WARNING, so
 // call it once BEFORE the operation you want to observe, then again to read what it emitted.
 std::string read_log() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::read_log();
 }
 
@@ -4652,6 +4892,7 @@ std::string read_log() {
 // collector is separate, off until set_log_collection names a level, and keeps structured records
 // for drain_log_collection. Both return "" on success or "Exception: <reason>" (an unknown level).
 std::string set_log_level(std::string level) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Logger::getInstance().setLevel(OpenMagnetics::log_level_from_string(level));
         return "";
@@ -4662,12 +4903,14 @@ std::string set_log_level(std::string level) {
 }
 
 std::string get_log_level() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return OpenMagnetics::to_string(OpenMagnetics::Logger::getInstance().getLevel());
 }
 
 // "OFF" stops collecting and discards what was not drained; any other level starts (or re-levels)
 // collection at that level.
 std::string set_log_collection(std::string level) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto parsedLevel = OpenMagnetics::log_level_from_string(level);
         if (parsedLevel == OpenMagnetics::LogLevel::OFF) {
@@ -4684,6 +4927,7 @@ std::string set_log_collection(std::string level) {
 }
 
 std::string get_log_collection() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto& logger = OpenMagnetics::Logger::getInstance();
     return logger.isCollectorEnabled() ? OpenMagnetics::to_string(logger.getCollectorLevel()) : std::string("OFF");
 }
@@ -4692,6 +4936,7 @@ std::string get_log_collection() {
 // {"level", "module", "message", "count", "detail"}; "[]" when nothing was collected or collection is off.
 // "detail" is the part that varies between repeats of the message (the latest repeat's), "" when none.
 std::string drain_log_collection() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json records = json::array();
         for (const auto& record : OpenMagnetics::Logger::getInstance().drainCollected()) {
@@ -4709,6 +4954,7 @@ std::string drain_log_collection() {
 }
 
 std::string plot_magnetic(std::string magneticString, std::string projectionString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::filesystem::path emptyFilepath;
 
@@ -4766,6 +5012,7 @@ std::string plot_magnetic(std::string magneticString, std::string projectionStri
 // routes impose, in the same winding-window frame the turns already use. The Studio draws them;
 // MKF stays the single source of truth for where they go.
 std::string get_connection_layout(std::string magneticString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto magneticJson = json::parse(magneticString);
         OpenMagnetics::Magnetic magnetic(magneticJson);
@@ -4862,6 +5109,7 @@ std::string get_connection_layout(std::string magneticString) {
 }
 
 std::string plot_magnetic_field(std::string magneticString, std::string operatingPointString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, true);
         WEB_SCOPED_SETTING(painter_advanced_litz, false);
@@ -4901,6 +5149,7 @@ std::string plot_magnetic_field(std::string magneticString, std::string operatin
 
 
 std::string plot_electric_field(std::string magneticString, std::string operatingPointString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, true);
         WEB_SCOPED_SETTING(painter_advanced_litz, false);
@@ -4940,6 +5189,7 @@ std::string plot_electric_field(std::string magneticString, std::string operatin
 
 
 std::string plot_wire_losses(std::string magneticString, std::string operatingPointString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, true);
         WEB_SCOPED_SETTING(painter_advanced_litz, false);
@@ -4976,6 +5226,7 @@ std::string plot_wire_losses(std::string magneticString, std::string operatingPo
 }
 
 std::string plot_wire(std::string wireString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, false);
         WEB_SCOPED_SETTING(painter_advanced_litz, true);
@@ -5001,6 +5252,7 @@ std::string plot_wire(std::string wireString) {
 }
 
 std::string plot_temperature_field(std::string magneticString, std::string operatingPointString, std::string textColor = "#000000", std::string bgColor = "#FFFFFF") {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         WEB_SCOPED_SETTING(painter_simple_litz, true);
         WEB_SCOPED_SETTING(painter_advanced_litz, false);
@@ -5062,6 +5314,7 @@ std::string plot_temperature_field(std::string magneticString, std::string opera
 
 
 std::string set_interlayer_insulation(std::string coilString, double layerThickness){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
         coil.set_interlayer_insulation(layerThickness);
@@ -5085,6 +5338,7 @@ std::string set_interlayer_insulation(std::string coilString, double layerThickn
 }
 
 std::string set_intersection_insulation(std::string coilString, double layerThickness, int numberInsulationLayers){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
         coil.set_intersection_insulation(layerThickness, numberInsulationLayers);
@@ -5108,6 +5362,7 @@ std::string set_intersection_insulation(std::string coilString, double layerThic
 }
 
 std::string calculate_filling_factor(std::string coilString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Coil coil(json::parse(coilString), false);
         auto fillingFactors = coil.calculate_filling_factor();
@@ -5144,6 +5399,7 @@ std::string calculate_filling_factor(std::string coilString) {
 }
 
 std::string get_settings() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json settingsJson;
 
@@ -5251,6 +5507,7 @@ std::string get_settings() {
 }
 
 void set_settings(std::string settingsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     json settingsJson = json::parse(settingsString);
 
     OpenMagnetics::Settings::GetInstance().set_magnetizing_inductance_include_air_inductance(settingsJson["magnetizingInductanceIncludeAirInductance"]);
@@ -5380,10 +5637,12 @@ void set_settings(std::string settingsString) {
     }
 }
 void reset_settings(std::string settingsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     OpenMagnetics::Settings::GetInstance().reset();
 }
 
 std::string clear_magnetic_cache() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::magneticsCache.clear();
         return std::to_string(OpenMagnetics::magneticsCache.size());
@@ -5395,6 +5654,7 @@ std::string clear_magnetic_cache() {
 
 
 std::string load_magnetic(std::string key, std::string magneticString, bool expand) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         if (expand) {
@@ -5410,6 +5670,7 @@ std::string load_magnetic(std::string key, std::string magneticString, bool expa
 }
 
 std::string load_magnetics(std::string keysString, std::string magneticsString, bool expand) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         json keys = json::parse(keysString);
         json magneticJsons = json::parse(magneticsString);
@@ -5429,6 +5690,7 @@ std::string load_magnetics(std::string keysString, std::string magneticsString, 
 }
 
 std::string load_magnetics_from_file(std::string path, bool expand) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::ifstream in(path);
         if (in) {
@@ -5451,6 +5713,7 @@ std::string load_magnetics_from_file(std::string path, bool expand) {
 }
 
 std::string load_magnetics_from_string(std::string database, bool expand) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         // Linear-time NDJSON scan. The previous loop did
         //   database.erase(0, pos + 1)
@@ -5511,6 +5774,7 @@ static OpenMagnetics::AdviserConstraints parse_constraints_json(const std::strin
 static OpenMagnetics::LibraryContext g_libraryContext;
 
 void library_context_load(std::string jsonText, std::string modeString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto mode = (modeString == "replace")
         ? OpenMagnetics::LibraryContext::LoadMode::Replace
         : OpenMagnetics::LibraryContext::LoadMode::Merge;
@@ -5518,10 +5782,12 @@ void library_context_load(std::string jsonText, std::string modeString) {
 }
 
 void library_context_clear() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     g_libraryContext.clear();
 }
 
 bool library_context_empty() {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     return g_libraryContext.empty();
 }
 
@@ -5531,6 +5797,7 @@ std::string calculate_advised_cores_with_context(std::string inputsString,
                                                   std::string coreModeString,
                                                   std::string constraintsString,
                                                   bool useContext) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto constraints = parse_constraints_json(constraintsString);
     const OpenMagnetics::LibraryContext* ctx = useContext ? &g_libraryContext : nullptr;
     return calculate_advised_cores_impl(inputsString, weightsString, maximumNumberResults, coreModeString,
@@ -5543,6 +5810,7 @@ std::string calculate_advised_magnetics_with_context(std::string inputsString,
                                                       std::string coreModeString,
                                                       std::string constraintsString,
                                                       bool useContext) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     auto constraints = parse_constraints_json(constraintsString);
     const OpenMagnetics::LibraryContext* ctx = useContext ? &g_libraryContext : nullptr;
     return calculate_advised_magnetics_impl(inputsString, weightsString, maximumNumberResults, coreModeString,
@@ -5558,6 +5826,7 @@ std::string calculate_advised_wires_with_context(std::string windingString,
                                                  size_t maximumNumberResults,
                                                  std::string constraintsString,
                                                  bool useContext) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Settings::GetInstance().set_coil_delimit_and_compact(true);
         OpenMagnetics::Winding winding(json::parse(windingString));
@@ -5598,6 +5867,7 @@ std::string calculate_advised_wires_with_context(std::string windingString,
 // wire pool comes from the inventory instead of the public catalog.
 // useContext=false is byte-identical to the classic entry point.
 std::string calculate_advised_coil_with_context(std::string masString, bool useContext) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         if (!useContext) {
             return calculate_advised_coil(masString);
@@ -5641,6 +5911,7 @@ inline void to_json(json& j, const MagneticCombinator::WindingCombination& x) {
 // {usedCombinations: {name -> WindingCombination}, virtualMagnetics: [Magnetic]}. Feed a chosen virtual
 // magnetic (+ its usedCombinations) back to devirtualize_mas to recover the real part + pin connections.
 std::string calculate_virtual_magnetics(std::string magneticString, std::string inputsString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
@@ -5665,6 +5936,7 @@ std::string calculate_virtual_magnetics(std::string magneticString, std::string 
 // devirtualizationData is the `usedCombinations` object returned by calculate_virtual_magnetics.
 std::string devirtualize_mas(std::string originalMagneticString, std::string virtualMasString,
                              std::string devirtualizationDataString) {
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic originalMagnetic(json::parse(originalMagneticString));
         OpenMagnetics::Mas virtualMas(json::parse(virtualMasString));
@@ -5743,6 +6015,7 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("calculate_gapping_from_number_turns_and_inductance", &calculate_gapping_from_number_turns_and_inductance);
     function("calculate_core_losses", &calculate_core_losses);
     function("get_core_losses_model_information", &get_core_losses_model_information);
+    function("calculate_dynamic_bh_loop", &calculate_dynamic_bh_loop);
     function("get_core_temperature_model_information", &get_core_temperature_model_information);
     function("resolve_dimension_with_tolerance", &resolve_dimension_with_tolerance);
     function("calculate_induced_voltage", &calculate_induced_voltage);
@@ -5783,6 +6056,8 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("wind_layers_and_turns_with_columns", &wind_layers_and_turns_with_columns);
     function("get_layers_by_winding_index", &get_layers_by_winding_index);
     function("get_layers_by_section", &get_layers_by_section);
+    function("get_insulation_section_thickness", &get_insulation_section_thickness);
+    function("get_insulation_layer_thickness", &get_insulation_layer_thickness);
     function("get_sections_description_conduction", &get_sections_description_conduction);
     function("simulate", &simulate);
     function("analyze_results", &analyze_results);

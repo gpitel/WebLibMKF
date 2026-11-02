@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include "support/LogOnceScope.h"
 #include "json.hpp"
 
 #include <emscripten/emscripten.h>
@@ -21,6 +22,7 @@ namespace fs = std::filesystem;
 
 
 std::vector<std::string> get_available_core_materials(std::string manufacturer){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         return OpenMagnetics::get_core_material_names(manufacturer);
     }
@@ -30,6 +32,7 @@ std::vector<std::string> get_available_core_materials(std::string manufacturer){
 }
 
 std::vector<std::string> get_available_core_manufacturers(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> manufacturers;
         auto materials = OpenMagnetics::get_materials("");
@@ -47,6 +50,7 @@ std::vector<std::string> get_available_core_manufacturers(){
 }
 
 std::vector<std::string> get_available_core_shape_families(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         std::vector<std::string> families;
         for (auto& family : magic_enum::enum_names<MAS::CoreShapeFamily>()) {
@@ -61,6 +65,7 @@ std::vector<std::string> get_available_core_shape_families(){
 }
 
 std::vector<std::string> get_available_core_shapes(){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         return OpenMagnetics::get_core_shape_names();
     }
@@ -70,6 +75,7 @@ std::vector<std::string> get_available_core_shapes(){
 }
 
 std::vector<std::string> get_available_core_shapes_by_manufacturer(std::string manufacturer){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         return OpenMagnetics::get_core_shape_names(manufacturer);
     }
@@ -79,6 +85,7 @@ std::vector<std::string> get_available_core_shapes_by_manufacturer(std::string m
 }
 
 std::string calculate_cross_referenced_core(std::string coreString, int numberTurns, std::string inputsString, int maximumNumberResults, std::string onlyManufacturer, bool useToroidalCores, bool useTwoPieceSetCores, bool useOnlyCoresInStock, bool keepMaterialConstant){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core referenceCore(json::parse(coreString));
         OpenMagnetics::Inputs inputs(json::parse(inputsString));
@@ -143,6 +150,7 @@ std::string calculate_cross_referenced_core(std::string coreString, int numberTu
 }
 
 std::string calculate_cross_referenced_core_material(std::string materialName, double temperature, int maximumNumberResults, std::string onlyManufacturer, bool useOnlyCoresInStock){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         auto referenceCoreMaterial = OpenMagnetics::find_core_material_by_name(materialName);
 
@@ -201,6 +209,7 @@ std::string calculate_cross_referenced_core_material(std::string materialName, d
 }
 
 std::string calculate_core_data(std::string coreDataString, bool includeMaterialData){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreDataString), includeMaterialData);
         json result;
@@ -213,6 +222,7 @@ std::string calculate_core_data(std::string coreDataString, bool includeMaterial
 }
 
 std::string get_core_temperature_dependant_parameters(std::string coreData, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Core core(json::parse(coreData));
         json result;
@@ -232,6 +242,7 @@ std::string get_core_temperature_dependant_parameters(std::string coreData, doub
 }
 
 std::string get_core_material_temperature_dependant_parameters(std::string coreMaterialString, double temperature){
+    OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         MAS::CoreMaterial coreMaterial(json::parse(coreMaterialString));
         json result;
