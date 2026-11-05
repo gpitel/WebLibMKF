@@ -1685,25 +1685,22 @@ std::string calculate_core_losses(std::string coreData,
 // excitation, at `temperature` [C]. The flux density is the excitation's own, else MKF derives it from the voltage or
 // current on the magnetic. The field is the static Roshen loop widened by the fields of Roshen's eddy-current and excess
 // terms, so f * oint H dB over the samples is totalVolumetricLosses. `time` is non-decreasing over one period, closed
-// (last B = first B); where dB/dt jumps the instant is repeated with the field on either side. MKF throws (and this
-// returns "Exception: ...") for a DC-biased excitation, a flux density with minor loops, or a material without the
-// Roshen inputs.
+// (last B = first B); where dB/dt jumps the instant is repeated with the field on either side.
+// ABT #1737: a DC-biased excitation gives a loop centred at (magneticFluxDensityDcBias, magneticFieldStrengthDcBias),
+// its static field widened by hysteresisDcBiasFactor (the Roshen-Esguerra law). That is a PLOTTING model: under a bias
+// the loop's area (its own totalVolumetricLosses) is not what calculate_core_losses returns, which does not apply the
+// law yet (ABT #1737 tracks it). Pre-1.0 MAS spellings (e.g. the waveform label "Triangular") are migrated first.
+// MKF throws (and this returns "Exception: ...") when a current's DC cannot reach the flux density (a label that draws
+// no offset; fewer excitations than windings with a DC current: give an open winding zero current), for a flux density
+// with minor loops, a bias at the Roshen saturation asymptote, or a material without the Roshen inputs.
 std::string calculate_dynamic_bh_loop(std::string magneticString, std::string operatingPointString, double temperature) {
     OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
         OpenMagnetics::Magnetic magnetic(json::parse(magneticString));
-        OperatingPoint operatingPoint(json::parse(operatingPointString));
-        if (operatingPoint.get_excitations_per_winding().empty()) {
-            throw std::invalid_argument("The operating point has no excitations");
-        }
-        OperatingPointExcitation excitation = operatingPoint.get_excitations_per_winding()[0];
-        if (!excitation.get_magnetic_flux_density()) {
-            OpenMagnetics::MagnetizingInductance magnetizingInductance;
-            auto magneticFluxDensity = magnetizingInductance.calculate_inductance_and_magnetic_flux_density(magnetic, &operatingPoint).second;
-            excitation = operatingPoint.get_excitations_per_winding()[0];
-            excitation.set_magnetic_flux_density(magneticFluxDensity);
-        }
-        auto loop = OpenMagnetics::CoreLossesRoshenModel().get_dynamic_bh_loop(magnetic.get_core(), excitation, temperature);
+        auto operatingPointJson = json::parse(operatingPointString);
+        OpenMagnetics::compat::migrate_pre_1_0(operatingPointJson);
+        OperatingPoint operatingPoint(operatingPointJson);
+        auto loop = OpenMagnetics::CoreLossesRoshenModel().get_dynamic_bh_loop(magnetic, operatingPoint, temperature);
 
         json result;
         result["frequency"] = loop.frequency;
@@ -1714,6 +1711,9 @@ std::string calculate_dynamic_bh_loop(std::string magneticString, std::string op
         result["eddyCurrentVolumetricLosses"] = loop.eddyCurrentVolumetricLosses;
         result["excessVolumetricLosses"] = loop.excessVolumetricLosses;
         result["totalVolumetricLosses"] = loop.totalVolumetricLosses;
+        result["magneticFluxDensityDcBias"] = loop.magneticFluxDensityDcBias;
+        result["magneticFieldStrengthDcBias"] = loop.magneticFieldStrengthDcBias;
+        result["hysteresisDcBiasFactor"] = loop.hysteresisDcBiasFactor;
         return result.dump();
     }
     catch (const std::exception &exc) {
