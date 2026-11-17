@@ -283,6 +283,29 @@ std::string calculate_processed(std::string harmonicsString, std::string wavefor
     }
 }
 
+// The MAS core type a shape family is built as ("twoPieceSet", "pieceAndPlate", "toroidal", ...), from
+// MKF's core_type_for_shape_family (ABT #2372). The builder sets the core's type from this whenever it
+// changes the shape family, instead of keeping the previous family's type. Takes the family's MAS
+// spelling ("ei"); an unknown family returns "Exception: ...".
+std::string get_core_type_for_shape_family(std::string familyString) {
+    try {
+        CoreShapeFamily family{};
+        json familyJson = familyString;
+        MAS::from_json(familyJson, family);
+        json roundTripped;
+        MAS::to_json(roundTripped, family);
+        if (roundTripped.get<std::string>() != familyString) {
+            throw std::invalid_argument("'" + familyString + "' is not a MAS core shape family");
+        }
+        json result;
+        MAS::to_json(result, OpenMagnetics::core_type_for_shape_family(family));
+        return result.get<std::string>();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
 std::string calculate_core_data_from_shape(std::string shapeString){
     OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
     try {
@@ -292,17 +315,9 @@ std::string calculate_core_data_from_shape(std::string shapeString){
         coreFunctionalDescription.set_shape(shape);
         coreFunctionalDescription.set_material("Dummy");
         coreFunctionalDescription.set_number_stacks(1);
-        if (shape.get_magnetic_circuit() == MagneticCircuit::OPEN) {
-            coreFunctionalDescription.set_type(CoreType::TWO_PIECE_SET);
-        }
-        else {
-            if (shape.get_family() == CoreShapeFamily::T) {
-                coreFunctionalDescription.set_type(CoreType::TOROIDAL);
-            }
-            else {
-                coreFunctionalDescription.set_type(CoreType::CLOSED_SHAPE);
-            }
-        }
+        // The type follows the family through MKF's one rule (ABT #2372), not the open/closed flag:
+        // that flag made an EI a twoPieceSet (mirrored) and a UI or PQI a closedShape.
+        coreFunctionalDescription.set_type(OpenMagnetics::core_type_for_shape_family(shape.get_family()));
         core.set_functional_description(coreFunctionalDescription);
         core.process_data();
 
@@ -331,17 +346,9 @@ std::string calculate_all_core_data_from_shapes(){
                 coreFunctionalDescription.set_shape(shape);
                 coreFunctionalDescription.set_material("Dummy");
                 coreFunctionalDescription.set_number_stacks(1);
-                if (shape.get_magnetic_circuit() == MagneticCircuit::OPEN) {
-                    coreFunctionalDescription.set_type(CoreType::TWO_PIECE_SET);
-                }
-                else {
-                    if (shape.get_family() == CoreShapeFamily::T) {
-                        coreFunctionalDescription.set_type(CoreType::TOROIDAL);
-                    }
-                    else {
-                        coreFunctionalDescription.set_type(CoreType::CLOSED_SHAPE);
-                    }
-                }
+                // The type follows the family through MKF's one rule (ABT #2372), not the open/closed flag:
+                // that flag made an EI a twoPieceSet (mirrored) and a UI or PQI a closedShape.
+                coreFunctionalDescription.set_type(OpenMagnetics::core_type_for_shape_family(shape.get_family()));
                 core.set_functional_description(coreFunctionalDescription);
                 core.process_data();
                 
@@ -359,6 +366,29 @@ std::string calculate_all_core_data_from_shapes(){
         }
         
         return resultArray.dump();
+    }
+    catch (const std::exception &exc) {
+        return "Exception: " + std::string{exc.what()};
+    }
+}
+
+// Fill factor k_f of a tape-wound core (nanocrystalline, amorphous, electrical steel wound as a toroid or C core) and
+// where it comes from, so the UI can show the k_f behind the effective area calculate_core_data returns (ABT #2234).
+// Takes a MAS core (material and shape may be names). Returns {"fillFactor": k_f, "source": "..."}, or null when the
+// core is not tape-wound (ferrite, powder, laminated stacks), or "Exception: ..." when MKF cannot place the material.
+std::string get_tape_wound_fill_factor(std::string coreString){
+    try {
+        OpenMagnetics::Core core(json::parse(coreString), false, false, false);
+        auto material = core.resolve_material();
+        auto family = core.resolve_shape().get_family();
+        auto fillFactor = OpenMagnetics::Core::get_tape_wound_fill_factor_with_source(material, family);
+        json result = nullptr;
+        if (fillFactor) {
+            result = json::object();
+            result["fillFactor"] = fillFactor->value;
+            result["source"] = fillFactor->source;
+        }
+        return result.dump();
     }
     catch (const std::exception &exc) {
         return "Exception: " + std::string{exc.what()};
@@ -1460,7 +1490,9 @@ std::string calculate_inductance_from_number_turns_and_gapping(std::string coreD
 
 // Canonical coil-aware form (preferred): turns are sized against the actual
 // winding via MKF's coil-taking overload.
-double calculate_number_turns_from_gapping_and_inductance(std::string coreData,
+// The number of turns as a JSON number, or "Exception: <message>" (ABT #2410: it returned -1 and printed MKF's
+// message to the worker console, so the Engine log said "worker returned -1" instead of why).
+std::string calculate_number_turns_from_gapping_and_inductance(std::string coreData,
                                                           std::string coilData,
                                                           std::string inputsData,
                                                           std::string modelsData){
@@ -1485,17 +1517,17 @@ double calculate_number_turns_from_gapping_and_inductance(std::string coreData,
         OpenMagnetics::MagnetizingInductance magnetizingInductanceObj(reluctanceModelName);
         double numberTurns = magnetizingInductanceObj.calculate_number_turns_from_gapping_and_inductance(core, coil, &inputs);
 
-        return numberTurns;
+        return json(numberTurns).dump();
     }
     catch (const std::exception &exc) {
-        std::cerr << "Exception: " + std::string{exc.what()} << std::endl;
-        return -1;
+        return "Exception: " + std::string{exc.what()};
     }
 }
 
 // Legacy 3-argument form (no coilData) — backward-compat backup. Forwards to
 // MKF's 3-argument overload, which synthesizes a single-primary-winding coil.
-double calculate_number_turns_from_gapping_and_inductance_legacy(std::string coreData,
+// The number of turns as a JSON number, or "Exception: <message>", as the canonical form.
+std::string calculate_number_turns_from_gapping_and_inductance_legacy(std::string coreData,
                                                                  std::string inputsData,
                                                                  std::string modelsData){
     OpenMagnetics::LogOnceScope logOnceScope;  // one web call is one scope: an excitation's warning is logged once (ABT #2160)
@@ -1518,11 +1550,10 @@ double calculate_number_turns_from_gapping_and_inductance_legacy(std::string cor
         OpenMagnetics::MagnetizingInductance magnetizingInductanceObj(reluctanceModelName);
         double numberTurns = magnetizingInductanceObj.calculate_number_turns_from_gapping_and_inductance(core, &inputs);
 
-        return numberTurns;
+        return json(numberTurns).dump();
     }
     catch (const std::exception &exc) {
-        std::cerr << "Exception: " + std::string{exc.what()} << std::endl;
-        return -1;
+        return "Exception: " + std::string{exc.what()};
     }
 }
 
@@ -1670,6 +1701,27 @@ std::string calculate_core_losses(std::string coreData,
             double coreTemperature = coreLossesOutput.get_temperature();
             result["maximumCoreTemperature"] = coreTemperature;
             result["maximumCoreTemperatureRise"] = coreTemperature - operatingPoint.get_conditions().get_ambient_temperature();
+        }
+
+        // ABT #2273 (as PyOM does since ABT #2264): when its own losses drive the core to its material's data limit (its
+        // Curie point, or where its permeability or loss data ends), MKF holds it there. Held at Curie the core is
+        // paramagnetic, so the losses above are tiny while the temperature is the limit: a user read 0.13 W for a core
+        // whose losses before the hold were 2.2 kW. Always present, so the absence of a hold is stated, not implied.
+        auto lossesBeforeHold = magneticSimulator.get_last_losses_before_hold();
+        result["coreHeldAtDataLimit"] = lossesBeforeHold.has_value();
+        if (lossesBeforeHold) {
+            const auto& held = lossesBeforeHold.value();
+            std::string limit;
+            switch (held.heldAt.source) {
+                case OpenMagnetics::CoreDataCeilingSource::CURIE_TEMPERATURE: limit = "curieTemperature"; break;
+                case OpenMagnetics::CoreDataCeilingSource::PERMEABILITY_TABLE_END: limit = "permeabilityDataEnd"; break;
+                case OpenMagnetics::CoreDataCeilingSource::STEINMETZ_TEMPERATURE_FACTOR_END: limit = "lossDataEnd"; break;
+            }
+            result["coreHeldAt"] = {{"temperature", held.heldAt.temperature}, {"limit", limit}};
+            // The last iterate with the core still the material its data describes: the losses that drove it to the limit.
+            json beforeHold;
+            to_json(beforeHold, held.coreLosses);
+            result["coreLossesBeforeHold"] = beforeHold;
         }
 
         return result.dump(4);
@@ -4851,6 +4903,11 @@ std::string plot_turns(std::string magneticString) {
         painter.paint_core(magnetic);
         painter.paint_bobbin(magnetic);
         painter.paint_coil_turns(magnetic);
+        // Copper that overlaps other copper, or lies outside its winding window (in the core or the
+        // bobbin), is painted red, as plot_magnetic's XY view does: a coil laid out for another core
+        // showed its turns inside the centre column in plain copper (ABT #2303, Alf 2026-11-07).
+        painter.paint_copper_overlaps(magnetic);
+        painter.paint_copper_outside_window(magnetic);
         if (fitFailure) {
             painter.paint_winding_fit_problems(magnetic);
         }
@@ -5965,6 +6022,7 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("get_excitation_harmonic_indexes", &get_excitation_harmonic_indexes);
     function("calculate_processed", &calculate_processed);
     function("calculate_core_data", &calculate_core_data);
+    function("get_tape_wound_fill_factor", &get_tape_wound_fill_factor);
     function("calculate_bobbin_data", &calculate_bobbin_data);
     function("get_wire_data", &get_wire_data);
     function("get_wire_data_by_name", &get_wire_data_by_name);
@@ -5986,6 +6044,7 @@ EMSCRIPTEN_BINDINGS(my_bindings) {
     function("load_core_data", &load_core_data);
     function("get_material_data", &get_material_data);
     function("get_core_temperature_dependant_parameters", &get_core_temperature_dependant_parameters);
+    function("get_core_type_for_shape_family", &get_core_type_for_shape_family);
     function("calculate_core_data_from_shape", &calculate_core_data_from_shape);
     function("calculate_all_core_data_from_shapes", &calculate_all_core_data_from_shapes);
     function("get_shape_data", &get_shape_data);
