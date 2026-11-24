@@ -5556,6 +5556,15 @@ std::string get_settings() {
         // the default) or lose that face's conduction path with an ERROR logged (false).
         settingsJson["thermalNetworkStrictGeometry"] = OpenMagnetics::Settings::GetInstance().get_thermal_network_strict_geometry();
 
+        // ABT #2208: whether a DC-biased excitation's core losses carry the DC-bias factor mu(0)/mu(H_dc)
+        // (true, the default) or ignore the bias (false).
+        settingsJson["coreLossesDcBiasEnabled"] = OpenMagnetics::Settings::GetInstance().get_core_losses_dc_bias_enabled();
+
+        // ABT #2534: the flux density the core losses are priced from: "EFFECTIVE_PARAMETERS" (one B(t) over Ae, the
+        // default) or "DISTRIBUTED" (the core's flux density map, every cell's own B(t) over its own volume).
+        settingsJson["coreLossesFluxDensityDistribution"] =
+            std::string(magic_enum::enum_name(OpenMagnetics::Settings::GetInstance().get_core_losses_flux_density_distribution()));
+
         return settingsJson.dump(4);
     }
     catch (const std::exception &exc) {
@@ -5691,6 +5700,20 @@ void set_settings(std::string settingsString) {
     // Guarded: settings objects persisted before this key existed must keep working.
     if (settingsJson.contains("thermalNetworkStrictGeometry")) {
         OpenMagnetics::Settings::GetInstance().set_thermal_network_strict_geometry(settingsJson["thermalNetworkStrictGeometry"].get<bool>());
+    }
+    // Guarded: settings objects persisted before this key existed must keep working.
+    if (settingsJson.contains("coreLossesDcBiasEnabled")) {
+        OpenMagnetics::Settings::GetInstance().set_core_losses_dc_bias_enabled(settingsJson["coreLossesDcBiasEnabled"].get<bool>());
+    }
+    // Guarded: settings objects persisted before this key existed must keep working. An unknown name throws.
+    if (settingsJson.contains("coreLossesFluxDensityDistribution")) {
+        auto name = settingsJson["coreLossesFluxDensityDistribution"].get<std::string>();
+        auto distribution = magic_enum::enum_cast<CoreLossesFluxDensityDistribution>(name);
+        if (!distribution) {
+            throw std::invalid_argument("Unknown coreLossesFluxDensityDistribution '" + name +
+                                        "': expected EFFECTIVE_PARAMETERS or DISTRIBUTED");
+        }
+        OpenMagnetics::Settings::GetInstance().set_core_losses_flux_density_distribution(distribution.value());
     }
 }
 void reset_settings(std::string settingsString) {
